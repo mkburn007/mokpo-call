@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel
 from typing import Dict, Optional
 from datetime import datetime
@@ -35,6 +35,36 @@ class DriverNameUpdate(BaseModel):
 async def root():
     return RedirectResponse(url="/driver")
 
+# --- 서비스 워커 파일 제공 (백그라운드 푸시 알림용) ---
+@app.get("/sw.js")
+async def get_sw():
+    sw_code = """
+    self.addEventListener('install', (event) => {
+        self.skipWaiting();
+    });
+
+    self.addEventListener('activate', (event) => {
+        event.waitUntil(self.clients.claim());
+    });
+
+    self.addEventListener('notificationclick', (event) => {
+        event.notification.close();
+        event.waitUntil(
+            clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+                for (let client of clientList) {
+                    if (client.url.includes('/driver') && 'focus' in client) {
+                        return client.focus();
+                    }
+                }
+                if (clients.openWindow) {
+                    return clients.openWindow('/driver');
+                }
+            })
+        );
+    });
+    """
+    return Response(content=sw_code, media_type="application/javascript")
+
 # --- API 엔드포인트 ---
 @app.get("/api/orders")
 async def get_orders(date: str = None):
@@ -50,8 +80,6 @@ async def get_orders(date: str = None):
         o_date = o.get("date", "")
         o_month = o_date[:7] if o_date else ""
 
-        # 진행 중인 오더(접수대기/배차완료)는 날짜 상관없이 무조건 노출
-        # 배달완료/취소 상태는 선택된 날짜에만 노출
         if o["status"] in ["접수대기", "배차완료"] or o_date == target_date:
             filtered_orders[o_id] = o
 
@@ -61,14 +89,12 @@ async def get_orders(date: str = None):
             fee = int(fare * FEE_RATE)
             net = fare - fee
 
-            # 일일 집계
             if o_date == target_date:
                 daily_settlement[d_id]["count"] += 1
                 daily_settlement[d_id]["fare"] += fare
                 daily_settlement[d_id]["fee"] += fee
                 daily_settlement[d_id]["net"] += net
 
-            # 월별 집계
             if o_month == target_month:
                 monthly_settlement[d_id]["count"] += 1
                 monthly_settlement[d_id]["fare"] += fare
@@ -487,24 +513,35 @@ async def get_driver_page():
             .btn-canceled { background: #dc3545; color: white; }
             .tab-btn { padding: 10px; width: 48%; margin-bottom: 10px; font-weight:bold; border-radius: 5px; border: 1px solid #007bff; background: white; color: #007bff; }
             .tab-btn.active { background: #007bff; color: white; }
-            .noti-btn { background: #ff9800; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%; margin-bottom: 15px; font-size: 16px; }
 
-            /* 신규 오더 알림 팝업 모달 스타일 */
-            .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 9999; justify-content: center; align-items: center; }
-            .modal-box { background: white; width: 90%; max-width: 400px; padding: 20px; border-radius: 12px; text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.3); animation: pop 0.3s ease-out; }
-            @keyframes pop { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-            .modal-title { font-size: 20px; font-weight: bold; color: #dc3545; margin-bottom: 10px; }
-            .modal-body { font-size: 16px; color: #333; margin-bottom: 15px; text-align: left; background: #f8f9fa; padding: 10px; border-radius: 8px; line-height: 1.5; }
-            .modal-btn { background: #007bff; color: white; padding: 12px; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; }
+            /* 모달 팝업 스타일 */
+            .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 99999; justify-content: center; align-items: center; }
+            .modal-box { background: white; width: 88%; max-width: 380px; padding: 20px; border-radius: 12px; text-align: center; box-shadow: 0 4px 20px rgba(0,0,0,0.5); animation: pop 0.3s ease-out; }
+            @keyframes pop { from { transform: scale(0.7); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+            .modal-title { font-size: 20px; font-weight: bold; color: #dc3545; margin-bottom: 12px; }
+            .modal-body { font-size: 16px; color: #333; margin-bottom: 15px; text-align: left; background: #f8f9fa; padding: 12px; border-radius: 8px; line-height: 1.6; border: 1px solid #e9ecef; }
+            .modal-btn { background: #28a745; color: white; padding: 14px; border: none; border-radius: 8px; font-size: 18px; font-weight: bold; width: 100%; cursor: pointer; }
+            .start-modal-btn { background: #007bff; color: white; padding: 15px; border: none; border-radius: 8px; font-size: 18px; font-weight: bold; width: 100%; cursor: pointer; margin-top: 10px; }
         </style>
     </head>
     <body>
-        <!-- 팝업 모달 창 -->
+        <!-- 1. 앱 시작 시 브라우저 소리 및 백그라운드 알림 허용 안내 팝업 모달 -->
+        <div id="startModal" class="modal-overlay" style="display: flex;">
+            <div class="modal-box">
+                <div class="modal-title" style="color: #007bff;">🔔 백그라운드/실시간 알림 켜기</div>
+                <div style="font-size: 15px; color: #555; margin-bottom: 15px; line-height: 1.5;">
+                    화면 밖(백그라운드)이나 화면이 켜져 있을 때 모두 <b>상단 푸시 팝업과 소리 및 진동 알림</b>을 수신하시려면 아래 버튼을 눌러주세요.
+                </div>
+                <button class="start-modal-btn" onclick="enableAudioAndNotifications()">확인 및 소리/알림 활성화</button>
+            </div>
+        </div>
+
+        <!-- 2. 앱 화면 내 실시간 팝업 모달 -->
         <div id="orderModal" class="modal-overlay">
             <div class="modal-box">
-                <div class="modal-title">🚨 신규 오더가 들어왔습니다!</div>
+                <div class="modal-title">🚨 신규 오더 접수!</div>
                 <div class="modal-body" id="modalContent"></div>
-                <button class="modal-btn" onclick="closeModal()">확인 및 화면 보기</button>
+                <button class="modal-btn" onclick="closeModal()">확인 및 오더 보기</button>
             </div>
         </div>
 
@@ -521,8 +558,6 @@ async def get_driver_page():
                 <button class="unlock-btn" onclick="unlockAccount()">🔒 계정 변경 (잠금 해제)</button>
             </div>
         </div>
-
-        <button id="notiBtn" class="noti-btn" onclick="requestNotificationPermission()">🔔 오더 소리/알림 켜기</button>
 
         <div class="date-card">
             <label style="font-weight:bold; font-size:14px; display:block; margin-bottom:5px;">📅 정산 내역 조회 날짜 선택</label>
@@ -551,56 +586,81 @@ async def get_driver_page():
             let currentDriverName = "";
             let knownOrderIds = new Set();
             let isFirstLoad = true;
-            let audioAllowed = false;
+            let audioContext = null;
+            let swRegistration = null;
 
-            function requestNotificationPermission() {
-                audioAllowed = true;
-                playAlertSound();
-                
-                if ("Notification" in window) {
-                    Notification.requestPermission().then(permission => {
-                        if (permission === "granted") {
-                            alert("오더 소리 및 백그라운드 알림이 활성화되었습니다.");
-                            document.getElementById('notiBtn').style.display = 'none';
-                        } else {
-                            alert("소리만 활성화되었습니다.");
-                        }
-                    });
-                } else {
-                    alert("소리가 활성화되었습니다.");
+            // 서비스 워커 등록 (백그라운드 푸시 준비)
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('/sw.js').then(reg => {
+                    swRegistration = reg;
+                }).catch(err => {});
+            }
+
+            // 웹 오디오 준비
+            function initAudioContext() {
+                if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume();
                 }
             }
 
-            // 연속 경보음 (3회 삐-삐-삐)
+            // 시작 버튼 클릭 시 권한 획득
+            function enableAudioAndNotifications() {
+                initAudioContext();
+                playAlertSound(); // 테스트 경보음
+
+                if ("Notification" in window) {
+                    Notification.requestPermission().then(permission => {
+                        document.getElementById('startModal').style.display = 'none';
+                    });
+                } else {
+                    document.getElementById('startModal').style.display = 'none';
+                }
+            }
+
+            // 3회 연속 비프 경보음 (삐-삐-삐)
             function playAlertSound() {
-                if (!audioAllowed) return;
                 try {
-                    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-                    let times = [0, 0.15, 0.3];
+                    initAudioContext();
+                    const times = [0, 0.2, 0.4];
                     times.forEach(t => {
-                        const osc = ctx.createOscillator();
-                        const gain = ctx.createGain();
+                        const osc = audioContext.createOscillator();
+                        const gain = audioContext.createGain();
                         osc.type = 'sine';
-                        osc.frequency.value = 880;
+                        osc.frequency.value = 950;
                         osc.connect(gain);
-                        gain.connect(ctx.destination);
-                        osc.start(ctx.currentTime + t);
-                        gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + t + 0.1);
-                        osc.stop(ctx.currentTime + t + 0.1);
+                        gain.connect(audioContext.destination);
+                        osc.start(audioContext.currentTime + t);
+                        gain.gain.exponentialRampToValueAtTime(0.00001, audioContext.currentTime + t + 0.15);
+                        osc.stop(audioContext.currentTime + t + 0.15);
                     });
                 } catch(e) {}
             }
 
             function triggerNotification(title, body, orderObj) {
-                // 1. 소리 알림
+                // 1. 화면 내 경보 소리 재생
                 playAlertSound();
 
-                // 2. 팝업 모달창 띄우기
+                // 2. 포그라운드 모달 노출
                 showModal(orderObj);
 
-                // 3. 시스템 백그라운드 푸시 알림
+                // 3. 백그라운드(화면 밖) 스마트폰 상단 푸시 팝업 노출 + 진동 및 소리 발생
                 if ("Notification" in window && Notification.permission === "granted") {
-                    new Notification(title, { body: body, icon: "https://cdn-icons-png.flaticon.com/512/2972/2972531.png" });
+                    const options = {
+                        body: body,
+                        vibrate: [500, 100, 500, 100, 500],
+                        requireInteraction: true,
+                        renotify: true,
+                        tag: 'new-order-' + orderObj.id
+                    };
+
+                    if (swRegistration) {
+                        swRegistration.showNotification(title, options);
+                    } else {
+                        new Notification(title, options);
+                    }
                 }
             }
 
@@ -608,10 +668,10 @@ async def get_driver_page():
                 const modal = document.getElementById('orderModal');
                 const content = document.getElementById('modalContent');
                 content.innerHTML = `
-                    <b>📌 출발지:</b> ${o.pickup}<br>
-                    <b>🏁 도착지:</b> ${o.destination}<br>
+                    <b>🛫 출발지:</b> ${o.pickup}<br>
+                    <b>🛬 도착지:</b> ${o.destination}<br>
                     <b>📦 물품:</b> ${o.content || '내용없음'}<br>
-                    <b>💵 요금:</b> <span style="color:#d9534f; font-weight:bold;">${o.fee.toLocaleString()}원</span>
+                    <b>💵 요금:</b> <span style="color:#d9534f; font-weight:bold; font-size:18px;">${o.fee.toLocaleString()}원</span>
                 `;
                 modal.style.display = 'flex';
             }
@@ -653,10 +713,6 @@ async def get_driver_page():
                     document.getElementById('account-area').style.display = 'block';
                     document.getElementById('locked-area').style.display = 'none';
                     currentDriverId = parseInt(document.getElementById('driverId').value || 1);
-                }
-
-                if ("Notification" in window && Notification.permission === "granted") {
-                    document.getElementById('notiBtn').style.display = 'none';
                 }
             }
 
@@ -726,7 +782,7 @@ async def get_driver_page():
                         knownOrderIds.add(o.id);
                         if (o.status === '접수대기') {
                             const bodyMsg = `[${o.pickup} ➔ ${o.destination}] ${o.fee.toLocaleString()}원 (${o.content || '내용없음'})`;
-                            triggerNotification("🚨 신규 퀵 오더가 접수되었습니다!", bodyMsg, o);
+                            triggerNotification("🚨 신규 퀵 오더 접수!", bodyMsg, o);
                         }
                     }
                 });
@@ -778,7 +834,7 @@ async def get_driver_page():
 
                     container.innerHTML += `
                         <div class="${cardClass}">
-                            <div style="display:flex; justify-shadow:space-between; justify-content:space-between; align-items:center;">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
                                 <span style="font-size:12px; color:#666;">오더 #${o.id}</span>
                                 <span style="font-size:12px; font-weight:bold; color:#007bff;">${o.status}</span>
                             </div>
@@ -816,6 +872,9 @@ async def get_driver_page():
                     }
                 }
             }
+
+            window.addEventListener('click', initAudioContext, { once: true });
+            window.addEventListener('touchstart', initAudioContext, { once: true });
 
             setInterval(fetchOrders, 2000);
             initAccount();
