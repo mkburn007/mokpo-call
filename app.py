@@ -50,7 +50,9 @@ async def get_orders(date: str = None):
         o_date = o.get("date", "")
         o_month = o_date[:7] if o_date else ""
 
-        if o_date == target_date:
+        # 진행 중인 오더(접수대기/배차완료)는 날짜 상관없이 무조건 노출
+        # 배달완료/취소 상태는 선택된 날짜에만 노출
+        if o["status"] in ["접수대기", "배차완료"] or o_date == target_date:
             filtered_orders[o_id] = o
 
         if o["status"] == "배달완료" and o["driver_id"] in drivers_db:
@@ -181,7 +183,7 @@ async def get_admin_page():
         </div>
 
         <div class="card">
-            <h2>📅 날짜 선택 (자체 달력)</h2>
+            <h2>📅 정산 내역 조회 날짜 선택</h2>
             <input type="date" id="searchDate" class="date-picker" onchange="fetchOrders()">
         </div>
 
@@ -219,7 +221,7 @@ async def get_admin_page():
         </div>
 
         <div class="card">
-            <h2>📜 해당 날짜 오더 및 관제 관리</h2>
+            <h2>📜 오더 및 관제 현황 목록</h2>
             <table>
                 <thead>
                     <tr><th>번호</th><th>출발지</th><th>도착지</th><th>오더 내용</th><th>총 요금</th><th>수수료(15%)</th><th>실수령액</th><th>상태</th><th>수행 기사</th><th>관리</th></tr>
@@ -229,7 +231,10 @@ async def get_admin_page():
         </div>
 
         <script>
-            document.getElementById('searchDate').value = new Date().toISOString().substring(0, 10);
+            // YYYY-MM-DD 로컬 날짜 문자열 세팅
+            const todayStr = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().substring(0, 10);
+            document.getElementById('searchDate').value = todayStr;
+
             let driversDict = {};
             let previousOrders = {};
             let soundEnabled = false;
@@ -347,7 +352,7 @@ async def get_admin_page():
             }
 
             async function cancelOrder(id) {
-                if(confirm(`노선 번호 #${id} 오더를 정말 취소하시겠습니까?`)) {
+                if(confirm(`오더 번호 #${id} 오더를 정말 취소하시겠습니까?`)) {
                     const res = await fetch(`/api/orders/${id}/cancel`, { method: 'POST' });
                     if(res.ok) {
                         alert("오더가 취소되었습니다.");
@@ -384,7 +389,15 @@ async def get_admin_page():
             function renderOrders(orders) {
                 const tbody = document.getElementById('order-list');
                 tbody.innerHTML = '';
-                Object.values(orders).reverse().forEach(o => {
+                
+                const ordersList = Object.values(orders).reverse();
+
+                if (ordersList.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="10" style="color:#888;">접수된 오더가 없습니다.</td></tr>';
+                    return;
+                }
+
+                ordersList.forEach(o => {
                     const fee15 = Math.floor(o.fee * 0.15);
                     const net = o.fee - fee15;
                     const contentText = o.content ? o.content : "-";
@@ -497,7 +510,7 @@ async def get_driver_page():
         <button id="notiBtn" class="noti-btn" onclick="requestNotificationPermission()">🔔 오더 소리/알림 켜기</button>
 
         <div class="date-card">
-            <label style="font-weight:bold; font-size:14px; display:block; margin-bottom:5px;">📅 날짜 선택 (과거 내역 조회)</label>
+            <label style="font-weight:bold; font-size:14px; display:block; margin-bottom:5px;">📅 정산 내역 조회 날짜 선택</label>
             <input type="date" id="searchDate" class="date-picker" onchange="fetchOrders()">
         </div>
 
@@ -515,7 +528,10 @@ async def get_driver_page():
         <div id="order-container"></div>
 
         <script>
-            document.getElementById('searchDate').value = new Date().toISOString().substring(0, 10);
+            // YYYY-MM-DD 로컬 날짜 문자열 세팅
+            const todayStr = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().substring(0, 10);
+            document.getElementById('searchDate').value = todayStr;
+
             let currentTab = 'waiting';
             let currentDriverId = 1;
             let currentDriverName = "";
