@@ -6,7 +6,7 @@ from datetime import datetime
 
 app = FastAPI()
 
-FEE_RATE = 0.15  # 수수료율 15%로 설정
+FEE_RATE = 0.15  # 수수료율 15%
 
 orders_db: Dict[int, dict] = {}
 drivers_db: Dict[int, str] = {1: "김기사", 2: "이기사", 3: "박기사", 4: "최기사", 5: "정기사"}
@@ -63,6 +63,7 @@ async def get_orders(date: str = None):
         "orders": filtered_orders,
         "daily_settlement": daily_settlement,
         "monthly_settlement": monthly_settlement,
+        "drivers": drivers_db,
         "target_date": target_date,
         "target_month": target_month
     }
@@ -121,6 +122,9 @@ async def get_admin_page():
             th, td { border: 1px solid #ddd; padding: 10px; text-align: center; }
             th { background-color: #333; color: white; }
             .highlight { color: #28a745; font-weight: bold; }
+            .status-waiting { color: #007bff; font-weight: bold; }
+            .status-ing { color: #ff9800; font-weight: bold; }
+            .status-done { color: #28a745; font-weight: bold; }
             .date-picker { font-size: 16px; padding: 8px; margin-bottom: 5px; width: 100%; box-sizing: border-box; }
         </style>
     </head>
@@ -161,10 +165,10 @@ async def get_admin_page():
         </div>
 
         <div class="card">
-            <h2>📜 해당 날짜 수행 및 오더 내역</h2>
+            <h2>📜 해당 날짜 오더 및 기사 수행 현황</h2>
             <table>
                 <thead>
-                    <tr><th>번호</th><th>출발지</th><th>도착지</th><th>총 요금</th><th>수수료(15%)</th><th>실수령액</th><th>상태</th><th>담당 기사</th></tr>
+                    <tr><th>번호</th><th>출발지</th><th>도착지</th><th>총 요금</th><th>수수료(15%)</th><th>실수령액</th><th>상태</th><th>수행 기사</th></tr>
                 </thead>
                 <tbody id="order-list"></tbody>
             </table>
@@ -172,6 +176,7 @@ async def get_admin_page():
 
         <script>
             document.getElementById('searchDate').value = new Date().toISOString().substring(0, 10);
+            let driversDict = {};
 
             async function fetchOrders() {
                 const dateVal = document.getElementById('searchDate').value;
@@ -179,6 +184,7 @@ async def get_admin_page():
                     const res = await fetch(`/api/orders?date=${dateVal}`);
                     const data = await res.json();
                     
+                    driversDict = data.drivers;
                     document.getElementById('daily-title').innerText = `${data.target_date} 일일`;
                     document.getElementById('monthly-title').innerText = `${data.target_month} 월간`;
 
@@ -235,6 +241,20 @@ async def get_admin_page():
                 Object.values(orders).reverse().forEach(o => {
                     const fee15 = Math.floor(o.fee * 0.15);
                     const net = o.fee - fee15;
+                    
+                    let statusClass = "status-waiting";
+                    let driverInfo = "-";
+
+                    if (o.status === "배차완료") {
+                        statusClass = "status-ing";
+                        const dName = driversDict[o.driver_id] || "";
+                        driverInfo = `<span style="color:#d9534f; font-weight:bold;">🛵 ${o.driver_id}번 ${dName} 수행중</span>`;
+                    } else if (o.status === "배달완료") {
+                        statusClass = "status-done";
+                        const dName = driversDict[o.driver_id] || "";
+                        driverInfo = `<b>${o.driver_id}번 ${dName} (완료)</b>`;
+                    }
+
                     tbody.innerHTML += `
                         <tr>
                             <td>${o.id}</td>
@@ -243,8 +263,8 @@ async def get_admin_page():
                             <td>${o.fee.toLocaleString()}원</td>
                             <td>${fee15.toLocaleString()}원</td>
                             <td class="highlight">${net.toLocaleString()}원</td>
-                            <td><b>${o.status}</b></td>
-                            <td>${o.driver_id ? o.driver_id + '번 기사' : '-'}</td>
+                            <td class="${statusClass}">${o.status}</td>
+                            <td>${driverInfo}</td>
                         </tr>
                     `;
                 });
@@ -271,8 +291,10 @@ async def get_driver_page():
             body { font-family: sans-serif; margin: 0; padding: 15px; background-color: #f8f9fa; }
             .header { background: #343a40; color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px; text-align: center; }
             .driver-select { font-size: 16px; padding: 8px; width: 100%; border-radius: 5px; margin-top: 8px; }
+            .lock-btn { margin-top: 8px; background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 5px; font-weight: bold; cursor: pointer; width: 100%; }
+            .unlock-btn { margin-top: 8px; background: #dc3545; color: white; border: none; padding: 6px 10px; border-radius: 5px; font-size: 12px; cursor: pointer; }
             .date-card { background: white; padding: 12px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-            .date-picker { font-size: 16px; padding: 8px; width: 100%; box-sizing: border-radius: 5px; border: 1px solid #ccc; }
+            .date-picker { font-size: 16px; padding: 8px; width: 100%; box-sizing: border-box; border-radius: 5px; border: 1px solid #ccc; }
             .summary-card { background: #007bff; color: white; padding: 15px; border-radius: 10px; margin-bottom: 15px; text-align: center; }
             .summary-card h3 { margin: 0 0 10px 0; font-size: 16px; }
             .summary-card .amount { font-size: 24px; font-weight: bold; }
@@ -293,13 +315,21 @@ async def get_driver_page():
     <body>
         <div class="header">
             <h2 style="margin:0;">🛵 목포 퀵 기사 앱</h2>
-            <select id="driverId" class="driver-select" onchange="fetchOrders()">
-                <option value="1">1번 김기사님</option>
-                <option value="2">2번 이기사님</option>
-                <option value="3">3번 박기사님</option>
-                <option value="4">4번 최기사님</option>
-                <option value="5">5번 정기사님</option>
-            </select>
+            <div id="account-area">
+                <select id="driverId" class="driver-select">
+                    <option value="1">1번 김기사님</option>
+                    <option value="2">2번 이기사님</option>
+                    <option value="3">3번 박기사님</option>
+                    <option value="4">4번 최기사님</option>
+                    <option value="5">5번 정기사님</option>
+                </select>
+                <button class="lock-btn" onclick="lockAccount()">🔒 계정 고정 (이 기사로 계속 사용)</button>
+            </div>
+            <div id="locked-area" style="display:none; margin-top:8px;">
+                <span id="locked-driver-name" style="font-size:18px; font-weight:bold; color:#ffc107;"></span>
+                <br>
+                <button class="unlock-btn" onclick="unlockAccount()">🔒 계정 변경 (잠금 해제)</button>
+            </div>
         </div>
 
         <div class="date-card">
@@ -323,6 +353,39 @@ async def get_driver_page():
         <script>
             document.getElementById('searchDate').value = new Date().toISOString().substring(0, 10);
             let currentTab = 'waiting';
+            let currentDriverId = 1;
+
+            // 계정 잠금 관련 로직 (localStorage 활용)
+            function initAccount() {
+                const savedDriverId = localStorage.getItem('mokpo_driver_id');
+                if (savedDriverId) {
+                    currentDriverId = parseInt(savedDriverId);
+                    document.getElementById('account-area').style.display = 'none';
+                    document.getElementById('locked-area').style.display = 'block';
+                    
+                    const names = {1:"1번 김기사님", 2:"2번 이기사님", 3:"3번 박기사님", 4:"4번 최기사님", 5:"5번 정기사님"};
+                    document.getElementById('locked-driver-name').innerText = `👤 ${names[currentDriverId]} 로그인됨`;
+                } else {
+                    document.getElementById('account-area').style.display = 'block';
+                    document.getElementById('locked-area').style.display = 'none';
+                    currentDriverId = parseInt(document.getElementById('driverId').value);
+                }
+            }
+
+            function lockAccount() {
+                const selId = document.getElementById('driverId').value;
+                localStorage.setItem('mokpo_driver_id', selId);
+                initAccount();
+                fetchOrders();
+            }
+
+            function unlockAccount() {
+                if(confirm("계정을 변경하시겠습니까?")) {
+                    localStorage.removeItem('mokpo_driver_id');
+                    initAccount();
+                    fetchOrders();
+                }
+            }
 
             function switchTab(tab) {
                 currentTab = tab;
@@ -341,7 +404,7 @@ async def get_driver_page():
             }
 
             function render(currentOrders, dailySettlement) {
-                const myId = parseInt(document.getElementById('driverId').value);
+                const myId = currentDriverId;
                 
                 const myStat = dailySettlement[myId] || { count: 0, fare: 0, fee: 0, net: 0 };
                 document.getElementById('today-net').innerText = `${myStat.net.toLocaleString()} 원`;
@@ -410,17 +473,18 @@ async def get_driver_page():
             }
 
             async function acceptOrder(orderId) {
-                const driverId = parseInt(document.getElementById('driverId').value);
+                const driverId = currentDriverId;
                 await fetch(`/api/orders/${orderId}/accept?driver_id=${driverId}`, { method: 'POST' });
                 fetchOrders();
             }
 
             async function completeOrder(orderId) {
-                const driverId = parseInt(document.getElementById('driverId').value);
+                const driverId = currentDriverId;
                 await fetch(`/api/orders/${orderId}/complete?driver_id=${driverId}`, { method: 'POST' });
                 fetchOrders();
             }
 
+            initAccount();
             setInterval(fetchOrders, 2000);
             fetchOrders();
         </script>
