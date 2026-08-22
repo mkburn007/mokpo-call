@@ -22,11 +22,11 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: dict):
-        for connection in self.active_connections:
+        for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
             except Exception:
-                pass
+                self.disconnect(connection)
 
 manager = ConnectionManager()
 
@@ -44,7 +44,6 @@ class OrderCreate(BaseModel):
 # 2. 라우팅 (자동 이동 및 페이지)
 # ==========================================
 
-# [수정된 부분] 기본 주소 접속 시 기사님 페이지로 자동 이동
 @app.get("/")
 async def root():
     return RedirectResponse(url="/driver")
@@ -81,7 +80,6 @@ async def get_admin_page():
     <body>
         <h1>📦 목포 퀵 관제 센터</h1>
         <div class="container">
-            <!-- 오더 접수 폼 -->
             <div class="card">
                 <h2>신규 오더 접수</h2>
                 <div class="form-group">
@@ -99,7 +97,6 @@ async def get_admin_page():
                 <button onclick="createOrder()">오더 등록 및 기사 발송</button>
             </div>
 
-            <!-- 기사 현황 -->
             <div class="card">
                 <h2>기사 실시간 상태 (1~5번)</h2>
                 <table>
@@ -111,7 +108,6 @@ async def get_admin_page():
             </div>
         </div>
 
-        <!-- 전체 오더 리스트 -->
         <div class="card" style="margin-top: 20px;">
             <h2>실시간 오더 현황</h2>
             <table>
@@ -130,7 +126,8 @@ async def get_admin_page():
         </div>
 
         <script>
-            const ws = new WebSocket(`wss://${location.host}/ws`);
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
             ws.onmessage = function(event) {
                 const data = JSON.parse(event.data);
@@ -146,7 +143,7 @@ async def get_admin_page():
                 const fee = parseInt(document.getElementById('fee').value);
 
                 if (!pickup || !destination || !fee) {
-                    alert(' 모든 항목을 입력해 주세요.');
+                    alert('모든 항목을 입력해 주세요.');
                     return;
                 }
 
@@ -240,7 +237,8 @@ async def get_driver_page():
         </div>
 
         <script>
-            const ws = new WebSocket(`wss://${location.host}/ws`);
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${protocol}//${location.host}/ws`);
             let currentOrders = {};
 
             ws.onmessage = function(event) {
@@ -268,7 +266,6 @@ async def get_driver_page():
                 }
 
                 ordersArray.forEach(o => {
-                    // 완료된 오더는 표시 안 함
                     if (o.status === '배달완료') return;
 
                     const isMine = o.driver_id === myId;
@@ -310,7 +307,7 @@ async def get_driver_page():
     """
 
 # ==========================================
-# 3. API 및 웹소켓 백엔드 동작 로직
+# 3. API 및 백엔드 로직
 # ==========================================
 
 @app.websocket("/ws")
