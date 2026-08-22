@@ -2,12 +2,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 from typing import Dict
+from datetime import datetime
 
 app = FastAPI()
 
 FEE_RATE = 0.15  # 수수료율 15%
 
-# 데이터 저장 구조 (오더 및 기사 1~5번 데이터)
 orders_db: Dict[int, dict] = {}
 drivers_db: Dict[int, str] = {1: "김기사", 2: "이기사", 3: "박기사", 4: "최기사", 5: "정기사"}
 order_counter = 1
@@ -23,40 +23,63 @@ async def root():
 
 # --- API 엔드포인트 ---
 @app.get("/api/orders")
-async def get_orders():
-    # 기사별 정산 집계 계산
-    settlement = {}
-    for d_id, d_name in drivers_db.items():
-        settlement[d_id] = {
-            "name": d_name,
-            "completed_count": 0,
-            "total_fare": 0,
-            "total_fee": 0,
-            "net_pay": 0
-        }
-    
-    for o in orders_db.values():
-        if o["status"] == "배달완료" and o["driver_id"] in settlement:
+async def get_orders(date: str = None):
+    # 기본값: 오늘 날짜 (YYYY-MM-DD)
+    target_date = date if date else datetime.now().strftime("%Y-%m-%d")
+    target_month = target_date[:7] # YYYY-MM
+
+    daily_settlement = {d_id: {"name": d_name, "count": 0, "fare": 0, "fee": 0, "net": 0} for d_id, d_name in drivers_db.items()}
+    monthly_settlement = {d_id: {"name": d_name, "count": 0, "fare": 0, "fee": 0, "net": 0} for d_id, d_name in drivers_db.items()}
+
+    filtered_orders = {}
+
+    for o_id, o in orders_db.items():
+        o_date = o.get("date", "")
+        o_month = o_date[:7] if o_date else ""
+
+        if o_date == target_date:
+            filtered_orders[o_id] = o
+
+        if o["status"] == "배달완료" and o["driver_id"] in drivers_db:
             d_id = o["driver_id"]
             fare = o["fee"]
             fee = int(fare * FEE_RATE)
-            settlement[d_id]["completed_count"] += 1
-            settlement[d_id]["total_fare"] += fare
-            settlement[d_id]["total_fee"] += fee
-            settlement[d_id]["net_pay"] += (fare - fee)
+            net = fare - fee
 
-    return {"orders": orders_db, "settlement": settlement}
+            # 일일 집계
+            if o_date == target_date:
+                daily_settlement[d_id]["count"] += 1
+                daily_settlement[d_id]["fare"] += fare
+                daily_settlement[d_id]["fee"] += fee
+                daily_settlement[d_id]["net"] += net
+
+            # 월별 집계
+            if o_month == target_month:
+                monthly_settlement[d_id]["count"] += 1
+                monthly_settlement[d_id]["fare"] += fare
+                monthly_settlement[d_id]["fee"] += fee
+                monthly_settlement[d_id]["net"] += net
+
+    return {
+        "orders": filtered_orders,
+        "daily_settlement": daily_settlement,
+        "monthly_settlement": monthly_settlement,
+        "target_date": target_date,
+        "target_month": target_month
+    }
 
 @app.post("/api/orders")
 async def create_order(order: OrderCreate):
     global order_counter
+    today_str = datetime.now().strftime("%Y-%m-%d")
     new_order = {
         "id": order_counter,
         "pickup": order.pickup,
         "destination": order.destination,
         "fee": order.fee,
         "status": "접수대기",
-        "driver_id": None
+        "driver_id": None,
+        "date": today_str
     }
     orders_db[order_counter] = new_order
     order_counter += 1
@@ -99,11 +122,17 @@ async def get_admin_page():
             th, td { border: 1px solid #ddd; padding: 10px; text-align: center; }
             th { background-color: #333; color: white; }
             .highlight { color: #28a745; font-weight: bold; }
+            .date-picker { font-size: 16px; padding: 8px; margin-bottom: 10px; }
         </style>
     </head>
     <body>
         <h1>📦 목포 퀵 관제 센터</h1>
         
+        <div class="card">
+            <h2>📅 조회 날짜 선택</h2>
+            <input type="date" id="searchDate" class="date-picker" onchange="fetchOrders()">
+        </div>
+
         <div class="card">
             <h2>신규 오더 접수</h2>
             <div class="form-group"><label>출발지</label><input type="text" id="pickup" placeholder="예: 평화광장"></div>
@@ -113,19 +142,22 @@ async def get_admin_page():
         </div>
 
         <div class="card">
-            <h2>📊 기사별 일일 정산 현황</h2>
+            <h2>📊 <span id="daily-title">일일</span> 정산 현황</h2>
             <table>
                 <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>기사명</th>
-                        <th>완료 건수</th>
-                        <th>총 운임</th>
-                        <th>수수료 (10%)</th>
-                        <th>기사 실 수령액</th>
-                    </tr>
+                    <tr><th>ID</th><th>기사명</th><th>완료 건수</th><th>총 운임</th><th>수수료 (10%)</th><th>기사 실 수령액</th></tr>
                 </thead>
-                <tbody id="settlement-list"></tbody>
+                <tbody id="daily-list"></tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <h2>🗓️ <span id="monthly-title">월간</span> 정산 현황</h2>
+            <table>
+                <thead>
+                    <tr><th>ID</th><th>기사명</th><th>완료 건수</th><th>총 운임</th><th>수수료 (10%)</th><th>기사 실 수령액</th></tr>
+                </thead>
+                <tbody id="monthly-list"></tbody>
             </table>
         </div>
 
@@ -140,12 +172,20 @@ async def get_admin_page():
         </div>
 
         <script>
+            document.getElementById('searchDate').value = new Date().toISOString().substring(0, 10);
+
             async function fetchOrders() {
+                const dateVal = document.getElementById('searchDate').value;
                 try {
-                    const res = await fetch('/api/orders');
+                    const res = await fetch(`/api/orders?date=${dateVal}`);
                     const data = await res.json();
+                    
+                    document.getElementById('daily-title').innerText = `${data.target_date} 일일`;
+                    document.getElementById('monthly-title').innerText = `${data.target_month} 월간`;
+
+                    renderSettlement('daily-list', data.daily_settlement);
+                    renderSettlement('monthly-list', data.monthly_settlement);
                     renderOrders(data.orders);
-                    renderSettlement(data.settlement);
                 } catch(e) {}
             }
 
@@ -170,23 +210,21 @@ async def get_admin_page():
                     document.getElementById('destination').value = '';
                     document.getElementById('fee').value = '';
                     fetchOrders();
-                } else {
-                    alert('오더 등록 실패');
                 }
             }
 
-            function renderSettlement(settlement) {
-                const tbody = document.getElementById('settlement-list');
+            function renderSettlement(elementId, settlement) {
+                const tbody = document.getElementById(elementId);
                 tbody.innerHTML = '';
                 Object.entries(settlement).forEach(([id, s]) => {
                     tbody.innerHTML += `
                         <tr>
                             <td>${id}번</td>
                             <td><b>${s.name}</b></td>
-                            <td>${s.completed_count}건</td>
-                            <td>${s.total_fare.toLocaleString()}원</td>
-                            <td>${s.total_fee.toLocaleString()}원</td>
-                            <td class="highlight">${s.net_pay.toLocaleString()}원</td>
+                            <td>${s.count}건</td>
+                            <td>${s.fare.toLocaleString()}원</td>
+                            <td>${s.fee.toLocaleString()}원</td>
+                            <td class="highlight">${s.net.toLocaleString()}원</td>
                         </tr>
                     `;
                 });
@@ -230,14 +268,20 @@ async def get_driver_page():
             body { font-family: sans-serif; margin: 0; padding: 15px; background-color: #f8f9fa; }
             .header { background: #343a40; color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px; text-align: center; }
             .driver-select { font-size: 16px; padding: 8px; width: 100%; border-radius: 5px; margin-top: 8px; }
+            .summary-card { background: #007bff; color: white; padding: 15px; border-radius: 10px; margin-bottom: 15px; text-align: center; }
+            .summary-card h3 { margin: 0 0 10px 0; font-size: 16px; }
+            .summary-card .amount { font-size: 24px; font-weight: bold; }
             .order-card { background: white; border-radius: 10px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); border-left: 5px solid #007bff; }
             .order-card.accepted { border-left-color: #28a745; background-color: #f1f9f3; }
+            .order-card.completed { border-left-color: #6c757d; background-color: #e9ecef; }
             .location { font-size: 18px; font-weight: bold; color: #212529; margin: 5px 0; }
             .fee { font-size: 20px; font-weight: bold; color: #d9534f; text-align: right; margin-top: 10px; }
             .btn { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
             .btn-accept { background: #28a745; color: white; }
             .btn-complete { background: #17a2b8; color: white; }
             .btn-disabled { background: #ccc; color: #666; }
+            .tab-btn { padding: 10px; width: 48%; margin-bottom: 10px; font-weight:bold; border-radius: 5px; border: 1px solid #007bff; background: white; color: #007bff; }
+            .tab-btn.active { background: #007bff; color: white; }
         </style>
     </head>
     <body>
@@ -252,56 +296,100 @@ async def get_driver_page():
             </select>
         </div>
 
-        <div id="order-container">
-            <p style="text-align: center; color: #6c757d;">대기 중인 오더가 없습니다.</p>
+        <div class="summary-card">
+            <h3>💰 오늘 완료한 실 수령액 (수수료 10% 제외)</h3>
+            <div class="amount" id="today-net">0 원</div>
+            <div style="margin-top:5px; font-size:12px;" id="today-summary">0건 완료 / 총 운임 0원</div>
         </div>
 
+        <div>
+            <button id="tab-waiting" class="tab-btn active" onclick="switchTab('waiting')">신규/운행중 오더</button>
+            <button id="tab-done" class="tab-btn" onclick="switchTab('done')">오늘 완료 내역</button>
+        </div>
+
+        <div id="order-container"></div>
+
         <script>
+            let currentTab = 'waiting';
+
+            function switchTab(tab) {
+                currentTab = tab;
+                document.getElementById('tab-waiting').classList.toggle('active', tab === 'waiting');
+                document.getElementById('tab-done').classList.toggle('active', tab === 'done');
+                fetchOrders();
+            }
+
             async function fetchOrders() {
                 try {
                     const res = await fetch('/api/orders');
                     const data = await res.json();
-                    render(data.orders);
+                    render(data.orders, data.daily_settlement);
                 } catch(e) {}
             }
 
-            function render(currentOrders) {
+            function render(currentOrders, dailySettlement) {
                 const myId = parseInt(document.getElementById('driverId').value);
+                
+                // 당일 요약 정산 업데이트
+                const myStat = dailySettlement[myId] || { count: 0, fare: 0, net: 0 };
+                document.getElementById('today-net').innerText = `${myStat.net.toLocaleString()} 원`;
+                document.getElementById('today-summary').innerText = `${myStat.count}건 완료 / 총 운임 ${myStat.fare.toLocaleString()}원`;
+
                 const container = document.getElementById('order-container');
                 container.innerHTML = '';
 
                 const ordersArray = Object.values(currentOrders).reverse();
 
-                if (ordersArray.length === 0) {
-                    container.innerHTML = '<p style="text-align: center; color: #6c757d;">현재 등록된 오더가 없습니다.</p>';
-                    return;
-                }
-
-                ordersArray.forEach(o => {
-                    if (o.status === '배달완료') return;
-
-                    const isMine = o.driver_id === myId;
-                    const isWaiting = o.status === '접수대기';
-
-                    let buttonHtml = '';
-                    if (isWaiting) {
-                        buttonHtml = `<button class="btn btn-accept" onclick="acceptOrder(${o.id})">오더 수락하기</button>`;
-                    } else if (isMine) {
-                        buttonHtml = `<button class="btn btn-complete" onclick="completeOrder(${o.id})">배달 완료 처리</button>`;
-                    } else {
-                        buttonHtml = `<button class="btn btn-disabled" disabled>${o.driver_id}번 기사 수행 중</button>`;
+                if (currentTab === 'waiting') {
+                    const waitingOrders = ordersArray.filter(o => o.status !== '배달완료');
+                    if (waitingOrders.length === 0) {
+                        container.innerHTML = '<p style="text-align: center; color: #6c757d;">대기 중인 오더가 없습니다.</p>';
+                        return;
                     }
 
-                    container.innerHTML += `
-                        <div class="order-card ${isMine ? 'accepted' : ''}">
-                            <div style="font-size:12px; color:#6c757d;">오더 번호: #${o.id}</div>
-                            <div class="location">🛫 출발: ${o.pickup}</div>
-                            <div class="location">🛬 도착: ${o.destination}</div>
-                            <div class="fee">${o.fee.toLocaleString()}원</div>
-                            ${buttonHtml}
-                        </div>
-                    `;
-                });
+                    waitingOrders.forEach(o => {
+                        const isMine = o.driver_id === myId;
+                        const isWaiting = o.status === '접수대기';
+
+                        let buttonHtml = '';
+                        if (isWaiting) {
+                            buttonHtml = `<button class="btn btn-accept" onclick="acceptOrder(${o.id})">오더 수락하기</button>`;
+                        } else if (isMine) {
+                            buttonHtml = `<button class="btn btn-complete" onclick="completeOrder(${o.id})">배달 완료 처리</button>`;
+                        } else {
+                            buttonHtml = `<button class="btn btn-disabled" disabled>${o.driver_id}번 기사 수행 중</button>`;
+                        }
+
+                        container.innerHTML += `
+                            <div class="order-card ${isMine ? 'accepted' : ''}">
+                                <div style="font-size:12px; color:#6c757d;">오더 번호: #${o.id}</div>
+                                <div class="location">🛫 출발: ${o.pickup}</div>
+                                <div class="location">🛬 도착: ${o.destination}</div>
+                                <div class="fee">${o.fee.toLocaleString()}원</div>
+                                ${buttonHtml}
+                            </div>
+                        `;
+                    });
+                } else {
+                    // 오늘 완료 내역 탭
+                    const myDoneOrders = ordersArray.filter(o => o.status === '배달완료' && o.driver_id === myId);
+                    if (myDoneOrders.length === 0) {
+                        container.innerHTML = '<p style="text-align: center; color: #6c757d;">오늘 완료한 배달 내역이 없습니다.</p>';
+                        return;
+                    }
+
+                    myDoneOrders.forEach(o => {
+                        const netFare = o.fee - int(o.fee * 0.1);
+                        container.innerHTML += `
+                            <div class="order-card completed">
+                                <div style="font-size:12px; color:#6c757d;">오더 번호: #${o.id} (완료)</div>
+                                <div class="location">🛫 출발: ${o.pickup}</div>
+                                <div class="location">🛬 도착: ${o.destination}</div>
+                                <div class="fee">${o.fee.toLocaleString()}원 <span style="font-size:14px; color:#28a745;">(정산금: ${(o.fee * 0.9).toLocaleString()}원)</span></div>
+                            </div>
+                        `;
+                    });
+                }
             }
 
             async function acceptOrder(orderId) {
