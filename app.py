@@ -170,11 +170,16 @@ async def get_admin_page():
             .btn-edit { background: #ffc107; color: #333; }
             .btn-cancel { background: #dc3545; color: white; }
             .table-scroll { max-height: 400px; overflow-y: auto; }
+            .sound-btn { background: #28a745; color: white; border: none; padding: 8px 15px; border-radius: 5px; font-weight: bold; cursor: pointer; margin-bottom: 15px; }
         </style>
     </head>
     <body>
         <h1>📦 목포 퀵 관제 센터</h1>
         
+        <div style="text-align: right;">
+            <button id="soundBtn" class="sound-btn" onclick="enableAdminSound()">🔔 관제 소리 알림 켜기</button>
+        </div>
+
         <div class="card">
             <h2>📅 날짜 선택 (자체 달력)</h2>
             <input type="date" id="searchDate" class="date-picker" onchange="fetchOrders()">
@@ -226,6 +231,32 @@ async def get_admin_page():
         <script>
             document.getElementById('searchDate').value = new Date().toISOString().substring(0, 10);
             let driversDict = {};
+            let previousOrders = {};
+            let soundEnabled = false;
+
+            function enableAdminSound() {
+                soundEnabled = true;
+                const btn = document.getElementById('soundBtn');
+                btn.innerText = "🔔 소리 알림 활성화됨";
+                btn.style.background = "#6c757d";
+                playBeep(600, 0.1);
+            }
+
+            function playBeep(freq = 800, duration = 0.2) {
+                if (!soundEnabled) return;
+                try {
+                    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.value = freq;
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start();
+                    gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + duration);
+                    osc.stop(ctx.currentTime + duration);
+                } catch(e) {}
+            }
 
             async function fetchOrders() {
                 const dateVal = document.getElementById('searchDate').value;
@@ -237,10 +268,30 @@ async def get_admin_page():
                     document.getElementById('daily-title').innerText = `${data.target_date} 일일`;
                     document.getElementById('monthly-title').innerText = `${data.target_month} 월간`;
 
+                    // 상태 변경 감지하여 알림음 발생
+                    checkStatusChanges(data.orders);
+
                     renderSettlement('daily-list', data.daily_settlement);
                     renderSettlement('monthly-list', data.monthly_settlement);
                     renderOrders(data.orders);
+                    
+                    previousOrders = JSON.parse(JSON.stringify(data.orders));
                 } catch(e) {}
+            }
+
+            function checkStatusChanges(currentOrders) {
+                if (Object.keys(previousOrders).length === 0) return;
+
+                Object.values(currentOrders).forEach(o => {
+                    const prev = previousOrders[o.id];
+                    if (prev) {
+                        if (prev.status === '접수대기' && o.status === '배차완료') {
+                            playBeep(900, 0.3); // 배차 수락음
+                        } else if (prev.status === '배차완료' && o.status === '배달완료') {
+                            playBeep(1200, 0.4); // 완료 소리
+                        }
+                    }
+                });
             }
 
             async function createOrder() {
@@ -288,7 +339,7 @@ async def get_admin_page():
                 });
 
                 if(res.ok) {
-                    alert("오더가 수정되었습니다. 기사 앱에도 변경 내용이 반영됩니다.");
+                    alert("오더가 수정되었습니다.");
                     fetchOrders();
                 } else {
                     alert("수정 실패");
@@ -296,7 +347,7 @@ async def get_admin_page():
             }
 
             async function cancelOrder(id) {
-                if(confirm(`노선 번호 #${id} 오더를 정말 취소하시겠습니까? 기사님 앱에서도 취소 처리됩니다.`)) {
+                if(confirm(`노선 번호 #${id} 오더를 정말 취소하시겠습니까?`)) {
                     const res = await fetch(`/api/orders/${id}/cancel`, { method: 'POST' });
                     if(res.ok) {
                         alert("오더가 취소되었습니다.");
@@ -425,6 +476,7 @@ async def get_driver_page():
             .btn-canceled { background: #dc3545; color: white; }
             .tab-btn { padding: 10px; width: 48%; margin-bottom: 10px; font-weight:bold; border-radius: 5px; border: 1px solid #007bff; background: white; color: #007bff; }
             .tab-btn.active { background: #007bff; color: white; }
+            .noti-btn { background: #ff9800; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%; margin-bottom: 15px; font-size: 16px; }
         </style>
     </head>
     <body>
@@ -441,6 +493,8 @@ async def get_driver_page():
                 <button class="unlock-btn" onclick="unlockAccount()">🔒 계정 변경 (잠금 해제)</button>
             </div>
         </div>
+
+        <button id="notiBtn" class="noti-btn" onclick="requestNotificationPermission()">🔔 오더 소리/알림 켜기</button>
 
         <div class="date-card">
             <label style="font-weight:bold; font-size:14px; display:block; margin-bottom:5px;">📅 날짜 선택 (과거 내역 조회)</label>
@@ -465,6 +519,50 @@ async def get_driver_page():
             let currentTab = 'waiting';
             let currentDriverId = 1;
             let currentDriverName = "";
+            let knownOrderIds = new Set();
+            let isFirstLoad = true;
+            let audioAllowed = false;
+
+            function requestNotificationPermission() {
+                audioAllowed = true;
+                playBeep(800, 0.1);
+                
+                if ("Notification" in window) {
+                    Notification.requestPermission().then(permission => {
+                        if (permission === "granted") {
+                            alert("오더 소리 및 백그라운드 알림이 활성화되었습니다.");
+                            document.getElementById('notiBtn').style.display = 'none';
+                        } else {
+                            alert("소리만 활성화되었습니다.");
+                        }
+                    });
+                } else {
+                    alert("소리가 활성화되었습니다.");
+                }
+            }
+
+            function playBeep(freq = 880, duration = 0.3) {
+                if (!audioAllowed) return;
+                try {
+                    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.value = freq;
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start();
+                    gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + duration);
+                    osc.stop(ctx.currentTime + duration);
+                } catch(e) {}
+            }
+
+            function triggerNotification(title, body) {
+                playBeep(880, 0.4);
+                if ("Notification" in window && Notification.permission === "granted") {
+                    new Notification(title, { body: body, icon: "https://cdn-icons-png.flaticon.com/512/2972/2972531.png" });
+                }
+            }
 
             function populateDriverSelect() {
                 const select = document.getElementById('driverId');
@@ -490,7 +588,6 @@ async def get_driver_page():
                     document.getElementById('locked-area').style.display = 'block';
                     document.getElementById('locked-driver-name').innerText = `👤 ${currentDriverId}번 [${currentDriverName}] 로그인됨`;
 
-                    // 서버에 고정된 기사명 동기화
                     await fetch('/api/drivers/name', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -500,6 +597,10 @@ async def get_driver_page():
                     document.getElementById('account-area').style.display = 'block';
                     document.getElementById('locked-area').style.display = 'none';
                     currentDriverId = parseInt(document.getElementById('driverId').value || 1);
+                }
+
+                if ("Notification" in window && Notification.permission === "granted") {
+                    document.getElementById('notiBtn').style.display = 'none';
                 }
             }
 
@@ -549,8 +650,32 @@ async def get_driver_page():
                 try {
                     const res = await fetch(`/api/orders?date=${dateVal}`);
                     const data = await res.json();
+                    
+                    // 신규 오더 알림 및 소리 감지
+                    checkNewOrders(data.orders);
+
                     render(data.orders, data.daily_settlement);
                 } catch(e) {}
+            }
+
+            function checkNewOrders(orders) {
+                const currentOrderList = Object.values(orders);
+
+                if (isFirstLoad) {
+                    currentOrderList.forEach(o => knownOrderIds.add(o.id));
+                    isFirstLoad = false;
+                    return;
+                }
+
+                currentOrderList.forEach(o => {
+                    if (!knownOrderIds.has(o.id)) {
+                        knownOrderIds.add(o.id);
+                        if (o.status === '접수대기') {
+                            const bodyMsg = `[${o.pickup} ➔ ${o.destination}] ${o.fee.toLocaleString()}원 (${o.content || '내용없음'})`;
+                            triggerNotification("🚨 신규 퀵 오더가 접수되었습니다!", bodyMsg);
+                        }
+                    }
+                });
             }
 
             function render(currentOrders, dailySettlement) {
