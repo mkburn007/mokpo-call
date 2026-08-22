@@ -6,7 +6,7 @@ from datetime import datetime
 
 app = FastAPI()
 
-FEE_RATE = 0.15  # 수수료율 15%
+FEE_RATE = 0.15  # 수수료율 15%로 설정
 
 orders_db: Dict[int, dict] = {}
 drivers_db: Dict[int, str] = {1: "김기사", 2: "이기사", 3: "박기사", 4: "최기사", 5: "정기사"}
@@ -24,7 +24,6 @@ async def root():
 # --- API 엔드포인트 ---
 @app.get("/api/orders")
 async def get_orders(date: str = None):
-    # 기본값: 오늘 날짜 (YYYY-MM-DD)
     target_date = date if date else datetime.now().strftime("%Y-%m-%d")
     target_month = target_date[:7] # YYYY-MM
 
@@ -122,14 +121,14 @@ async def get_admin_page():
             th, td { border: 1px solid #ddd; padding: 10px; text-align: center; }
             th { background-color: #333; color: white; }
             .highlight { color: #28a745; font-weight: bold; }
-            .date-picker { font-size: 16px; padding: 8px; margin-bottom: 10px; }
+            .date-picker { font-size: 16px; padding: 8px; margin-bottom: 5px; width: 100%; box-sizing: border-box; }
         </style>
     </head>
     <body>
         <h1>📦 목포 퀵 관제 센터</h1>
         
         <div class="card">
-            <h2>📅 조회 날짜 선택</h2>
+            <h2>📅 날짜 선택 (자체 달력)</h2>
             <input type="date" id="searchDate" class="date-picker" onchange="fetchOrders()">
         </div>
 
@@ -142,30 +141,30 @@ async def get_admin_page():
         </div>
 
         <div class="card">
-            <h2>📊 <span id="daily-title">일일</span> 정산 현황</h2>
+            <h2>📊 <span id="daily-title">일일</span> 정산 현황 (수수료 15%)</h2>
             <table>
                 <thead>
-                    <tr><th>ID</th><th>기사명</th><th>완료 건수</th><th>총 운임</th><th>수수료 (10%)</th><th>기사 실 수령액</th></tr>
+                    <tr><th>ID</th><th>기사명</th><th>완료 건수</th><th>총 운임</th><th>수수료 (15%)</th><th>기사 실 수령액</th></tr>
                 </thead>
                 <tbody id="daily-list"></tbody>
             </table>
         </div>
 
         <div class="card">
-            <h2>🗓️ <span id="monthly-title">월간</span> 정산 현황</h2>
+            <h2>🗓️ <span id="monthly-title">월간</span> 정산 현황 (수수료 15%)</h2>
             <table>
                 <thead>
-                    <tr><th>ID</th><th>기사명</th><th>완료 건수</th><th>총 운임</th><th>수수료 (10%)</th><th>기사 실 수령액</th></tr>
+                    <tr><th>ID</th><th>기사명</th><th>완료 건수</th><th>총 운임</th><th>수수료 (15%)</th><th>기사 실 수령액</th></tr>
                 </thead>
                 <tbody id="monthly-list"></tbody>
             </table>
         </div>
 
         <div class="card">
-            <h2>실시간 오더 현황</h2>
+            <h2>📜 해당 날짜 수행 및 오더 내역</h2>
             <table>
                 <thead>
-                    <tr><th>번호</th><th>출발지</th><th>도착지</th><th>요금</th><th>상태</th><th>담당 기사</th></tr>
+                    <tr><th>번호</th><th>출발지</th><th>도착지</th><th>총 요금</th><th>수수료(15%)</th><th>실수령액</th><th>상태</th><th>담당 기사</th></tr>
                 </thead>
                 <tbody id="order-list"></tbody>
             </table>
@@ -234,12 +233,16 @@ async def get_admin_page():
                 const tbody = document.getElementById('order-list');
                 tbody.innerHTML = '';
                 Object.values(orders).reverse().forEach(o => {
+                    const fee15 = Math.floor(o.fee * 0.15);
+                    const net = o.fee - fee15;
                     tbody.innerHTML += `
                         <tr>
                             <td>${o.id}</td>
                             <td>${o.pickup}</td>
                             <td>${o.destination}</td>
                             <td>${o.fee.toLocaleString()}원</td>
+                            <td>${fee15.toLocaleString()}원</td>
+                            <td class="highlight">${net.toLocaleString()}원</td>
                             <td><b>${o.status}</b></td>
                             <td>${o.driver_id ? o.driver_id + '번 기사' : '-'}</td>
                         </tr>
@@ -268,6 +271,8 @@ async def get_driver_page():
             body { font-family: sans-serif; margin: 0; padding: 15px; background-color: #f8f9fa; }
             .header { background: #343a40; color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px; text-align: center; }
             .driver-select { font-size: 16px; padding: 8px; width: 100%; border-radius: 5px; margin-top: 8px; }
+            .date-card { background: white; padding: 12px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+            .date-picker { font-size: 16px; padding: 8px; width: 100%; box-sizing: border-radius: 5px; border: 1px solid #ccc; }
             .summary-card { background: #007bff; color: white; padding: 15px; border-radius: 10px; margin-bottom: 15px; text-align: center; }
             .summary-card h3 { margin: 0 0 10px 0; font-size: 16px; }
             .summary-card .amount { font-size: 24px; font-weight: bold; }
@@ -275,7 +280,8 @@ async def get_driver_page():
             .order-card.accepted { border-left-color: #28a745; background-color: #f1f9f3; }
             .order-card.completed { border-left-color: #6c757d; background-color: #e9ecef; }
             .location { font-size: 18px; font-weight: bold; color: #212529; margin: 5px 0; }
-            .fee { font-size: 20px; font-weight: bold; color: #d9534f; text-align: right; margin-top: 10px; }
+            .fee { font-size: 18px; font-weight: bold; color: #d9534f; text-align: right; margin-top: 10px; }
+            .net-fee { font-size: 16px; color: #28a745; text-align: right; font-weight: bold; }
             .btn { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
             .btn-accept { background: #28a745; color: white; }
             .btn-complete { background: #17a2b8; color: white; }
@@ -296,20 +302,26 @@ async def get_driver_page():
             </select>
         </div>
 
+        <div class="date-card">
+            <label style="font-weight:bold; font-size:14px; display:block; margin-bottom:5px;">📅 날짜 선택 (과거 내역 조회)</label>
+            <input type="date" id="searchDate" class="date-picker" onchange="fetchOrders()">
+        </div>
+
         <div class="summary-card">
-            <h3>💰 오늘 완료한 실 수령액 (수수료 10% 제외)</h3>
+            <h3>💰 선택 날짜 완료 실수령액 (수수료 15% 차감)</h3>
             <div class="amount" id="today-net">0 원</div>
-            <div style="margin-top:5px; font-size:12px;" id="today-summary">0건 완료 / 총 운임 0원</div>
+            <div style="margin-top:5px; font-size:12px;" id="today-summary">0건 완료 / 총 운임 0원 (수수료 0원)</div>
         </div>
 
         <div>
             <button id="tab-waiting" class="tab-btn active" onclick="switchTab('waiting')">신규/운행중 오더</button>
-            <button id="tab-done" class="tab-btn" onclick="switchTab('done')">오늘 완료 내역</button>
+            <button id="tab-done" class="tab-btn" onclick="switchTab('done')">수행 완료 내역</button>
         </div>
 
         <div id="order-container"></div>
 
         <script>
+            document.getElementById('searchDate').value = new Date().toISOString().substring(0, 10);
             let currentTab = 'waiting';
 
             function switchTab(tab) {
@@ -320,8 +332,9 @@ async def get_driver_page():
             }
 
             async function fetchOrders() {
+                const dateVal = document.getElementById('searchDate').value;
                 try {
-                    const res = await fetch('/api/orders');
+                    const res = await fetch(`/api/orders?date=${dateVal}`);
                     const data = await res.json();
                     render(data.orders, data.daily_settlement);
                 } catch(e) {}
@@ -330,10 +343,9 @@ async def get_driver_page():
             function render(currentOrders, dailySettlement) {
                 const myId = parseInt(document.getElementById('driverId').value);
                 
-                // 당일 요약 정산 업데이트
-                const myStat = dailySettlement[myId] || { count: 0, fare: 0, net: 0 };
+                const myStat = dailySettlement[myId] || { count: 0, fare: 0, fee: 0, net: 0 };
                 document.getElementById('today-net').innerText = `${myStat.net.toLocaleString()} 원`;
-                document.getElementById('today-summary').innerText = `${myStat.count}건 완료 / 총 운임 ${myStat.fare.toLocaleString()}원`;
+                document.getElementById('today-summary').innerText = `${myStat.count}건 완료 / 총 운임 ${myStat.fare.toLocaleString()}원 (수수료 ${myStat.fee.toLocaleString()}원)`;
 
                 const container = document.getElementById('order-container');
                 container.innerHTML = '';
@@ -360,32 +372,37 @@ async def get_driver_page():
                             buttonHtml = `<button class="btn btn-disabled" disabled>${o.driver_id}번 기사 수행 중</button>`;
                         }
 
+                        const fee15 = Math.floor(o.fee * 0.15);
+                        const netFare = o.fee - fee15;
+
                         container.innerHTML += `
                             <div class="order-card ${isMine ? 'accepted' : ''}">
                                 <div style="font-size:12px; color:#6c757d;">오더 번호: #${o.id}</div>
                                 <div class="location">🛫 출발: ${o.pickup}</div>
                                 <div class="location">🛬 도착: ${o.destination}</div>
-                                <div class="fee">${o.fee.toLocaleString()}원</div>
+                                <div class="fee">운임: ${o.fee.toLocaleString()}원</div>
+                                <div class="net-fee">실수령액 (85%): ${netFare.toLocaleString()}원</div>
                                 ${buttonHtml}
                             </div>
                         `;
                     });
                 } else {
-                    // 오늘 완료 내역 탭
                     const myDoneOrders = ordersArray.filter(o => o.status === '배달완료' && o.driver_id === myId);
                     if (myDoneOrders.length === 0) {
-                        container.innerHTML = '<p style="text-align: center; color: #6c757d;">오늘 완료한 배달 내역이 없습니다.</p>';
+                        container.innerHTML = '<p style="text-align: center; color: #6c757d;">선택한 날짜에 완료한 배달 내역이 없습니다.</p>';
                         return;
                     }
 
                     myDoneOrders.forEach(o => {
-                        const netFare = o.fee - int(o.fee * 0.1);
+                        const fee15 = Math.floor(o.fee * 0.15);
+                        const netFare = o.fee - fee15;
                         container.innerHTML += `
                             <div class="order-card completed">
                                 <div style="font-size:12px; color:#6c757d;">오더 번호: #${o.id} (완료)</div>
                                 <div class="location">🛫 출발: ${o.pickup}</div>
                                 <div class="location">🛬 도착: ${o.destination}</div>
-                                <div class="fee">${o.fee.toLocaleString()}원 <span style="font-size:14px; color:#28a745;">(정산금: ${(o.fee * 0.9).toLocaleString()}원)</span></div>
+                                <div class="fee">총 운임: ${o.fee.toLocaleString()}원</div>
+                                <div class="net-fee">정산 실수령액: ${netFare.toLocaleString()}원 (수수료 15% 차감)</div>
                             </div>
                         `;
                     });
