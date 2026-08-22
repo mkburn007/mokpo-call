@@ -10,7 +10,7 @@ FEE_RATE = 0.15  # 수수료율 15%
 
 orders_db: Dict[int, dict] = {}
 
-# 기사님 1번부터 100번까지 기본이름 생성 (이후 기사 앱에서 스스로 변경 가능)
+# 기사님 1번부터 100번까지 기본이름 생성
 drivers_db: Dict[int, str] = {i: f"{i}번 기사" for i in range(1, 101)}
 
 order_counter = 1
@@ -19,11 +19,13 @@ class OrderCreate(BaseModel):
     pickup: str
     destination: str
     fee: int
+    content: Optional[str] = ""
 
 class OrderUpdate(BaseModel):
     pickup: str
     destination: str
     fee: int
+    content: Optional[str] = ""
 
 class DriverNameUpdate(BaseModel):
     driver_id: int
@@ -96,6 +98,7 @@ async def create_order(order: OrderCreate):
         "pickup": order.pickup,
         "destination": order.destination,
         "fee": order.fee,
+        "content": order.content,
         "status": "접수대기",
         "driver_id": None,
         "date": today_str
@@ -110,6 +113,7 @@ async def update_order(order_id: int, order: OrderUpdate):
         orders_db[order_id]["pickup"] = order.pickup
         orders_db[order_id]["destination"] = order.destination
         orders_db[order_id]["fee"] = order.fee
+        orders_db[order_id]["content"] = order.content
         return {"status": "ok"}
     raise HTTPException(status_code=404, detail="오더를 찾을 수 없습니다.")
 
@@ -180,6 +184,7 @@ async def get_admin_page():
             <h2>신규 오더 접수</h2>
             <div class="form-group"><label>출발지</label><input type="text" id="pickup" placeholder="예: 평화광장"></div>
             <div class="form-group"><label>도착지</label><input type="text" id="destination" placeholder="예: 목포역"></div>
+            <div class="form-group"><label>오더 내용 (물품명)</label><input type="text" id="content" placeholder="예: 서류 봉투, 꽃바구니, 소형 박스 등"></div>
             <div class="form-group"><label>요금 (원)</label><input type="number" id="fee" placeholder="예: 8000"></div>
             <button onclick="createOrder()">오더 등록하기</button>
         </div>
@@ -212,7 +217,7 @@ async def get_admin_page():
             <h2>📜 해당 날짜 오더 및 관제 관리</h2>
             <table>
                 <thead>
-                    <tr><th>번호</th><th>출발지</th><th>도착지</th><th>총 요금</th><th>수수료(15%)</th><th>실수령액</th><th>상태</th><th>수행 기사</th><th>관리</th></tr>
+                    <tr><th>번호</th><th>출발지</th><th>도착지</th><th>오더 내용</th><th>총 요금</th><th>수수료(15%)</th><th>실수령액</th><th>상태</th><th>수행 기사</th><th>관리</th></tr>
                 </thead>
                 <tbody id="order-list"></tbody>
             </table>
@@ -241,32 +246,36 @@ async def get_admin_page():
             async function createOrder() {
                 const pickup = document.getElementById('pickup').value;
                 const destination = document.getElementById('destination').value;
+                const content = document.getElementById('content').value;
                 const fee = parseInt(document.getElementById('fee').value);
 
                 if (!pickup || !destination || !fee) {
-                    alert('모든 항목을 입력해 주세요.');
+                    alert('출발지, 도착지, 요금을 입력해 주세요.');
                     return;
                 }
 
                 const res = await fetch('/api/orders', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pickup, destination, fee })
+                    body: JSON.stringify({ pickup, destination, fee, content })
                 });
 
                 if(res.ok) {
                     document.getElementById('pickup').value = '';
                     document.getElementById('destination').value = '';
+                    document.getElementById('content').value = '';
                     document.getElementById('fee').value = '';
                     fetchOrders();
                 }
             }
 
-            async function editOrder(id, curPickup, curDest, curFee) {
+            async function editOrder(id, curPickup, curDest, curContent, curFee) {
                 const newPickup = prompt("수정할 출발지:", curPickup);
                 if (newPickup === null) return;
                 const newDest = prompt("수정할 도착지:", curDest);
                 if (newDest === null) return;
+                const newContent = prompt("수정할 오더 내용(물품명):", curContent || "");
+                if (newContent === null) return;
                 const newFeeStr = prompt("수정할 요금(원):", curFee);
                 if (newFeeStr === null) return;
 
@@ -275,7 +284,7 @@ async def get_admin_page():
                 const res = await fetch(`/api/orders/${id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pickup: newPickup, destination: newDest, fee: newFee })
+                    body: JSON.stringify({ pickup: newPickup, destination: newDest, content: newContent, fee: newFee })
                 });
 
                 if(res.ok) {
@@ -327,6 +336,7 @@ async def get_admin_page():
                 Object.values(orders).reverse().forEach(o => {
                     const fee15 = Math.floor(o.fee * 0.15);
                     const net = o.fee - fee15;
+                    const contentText = o.content ? o.content : "-";
                     
                     let statusClass = "status-waiting";
                     let driverInfo = "-";
@@ -347,7 +357,7 @@ async def get_admin_page():
                     let actionBtns = '';
                     if (o.status !== '배달완료' && o.status !== '취소됨') {
                         actionBtns = `
-                            <button class="btn-sm btn-edit" onclick="editOrder(${o.id}, '${o.pickup}', '${o.destination}', ${o.fee})">수정</button>
+                            <button class="btn-sm btn-edit" onclick="editOrder(${o.id}, '${o.pickup}', '${o.destination}', '${o.content || ''}', ${o.fee})">수정</button>
                             <button class="btn-sm btn-cancel" onclick="cancelOrder(${o.id})">취소</button>
                         `;
                     } else {
@@ -359,6 +369,7 @@ async def get_admin_page():
                             <td>${o.id}</td>
                             <td>${o.pickup}</td>
                             <td>${o.destination}</td>
+                            <td><b>${contentText}</b></td>
                             <td>${o.fee.toLocaleString()}원</td>
                             <td>${fee15.toLocaleString()}원</td>
                             <td class="highlight">${net.toLocaleString()}원</td>
@@ -404,6 +415,7 @@ async def get_driver_page():
             .order-card.completed { border-left-color: #6c757d; background-color: #e9ecef; }
             .order-card.canceled { border-left-color: #dc3545; background-color: #f8d7da; }
             .location { font-size: 18px; font-weight: bold; color: #212529; margin: 5px 0; }
+            .content-box { background: #eef2f5; padding: 8px 12px; border-radius: 5px; font-size: 15px; color: #333; margin: 8px 0; font-weight: bold; }
             .fee { font-size: 18px; font-weight: bold; color: #d9534f; text-align: right; margin-top: 10px; }
             .net-fee { font-size: 16px; color: #28a745; text-align: right; font-weight: bold; }
             .btn { width: 100%; padding: 15px; font-size: 18px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
@@ -500,7 +512,6 @@ async def get_driver_page():
                     return;
                 }
 
-                // 서버에 이름 등록
                 const res = await fetch('/api/drivers/name', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -587,12 +598,14 @@ async def get_driver_page():
 
                         const fee15 = Math.floor(o.fee * 0.15);
                         const netFare = o.fee - fee15;
+                        const contentHtml = o.content ? `<div class="content-box">📦 내용: ${o.content}</div>` : '';
 
                         container.innerHTML += `
                             <div class="order-card ${cardClass}">
                                 <div style="font-size:12px; color:#6c757d;">오더 번호: #${o.id} ${isCanceled ? '<b style="color:red;">[취소됨]</b>' : ''}</div>
                                 <div class="location">🛫 출발: ${o.pickup}</div>
                                 <div class="location">🛬 도착: ${o.destination}</div>
+                                ${contentHtml}
                                 <div class="fee">운임: ${o.fee.toLocaleString()}원</div>
                                 <div class="net-fee">실수령액 (85%): ${netFare.toLocaleString()}원</div>
                                 ${buttonHtml}
@@ -609,11 +622,14 @@ async def get_driver_page():
                     myDoneOrders.forEach(o => {
                         const fee15 = Math.floor(o.fee * 0.15);
                         const netFare = o.fee - fee15;
+                        const contentHtml = o.content ? `<div class="content-box">📦 내용: ${o.content}</div>` : '';
+
                         container.innerHTML += `
                             <div class="order-card completed">
                                 <div style="font-size:12px; color:#6c757d;">오더 번호: #${o.id} (완료)</div>
                                 <div class="location">🛫 출발: ${o.pickup}</div>
                                 <div class="location">🛬 도착: ${o.destination}</div>
+                                ${contentHtml}
                                 <div class="fee">총 운임: ${o.fee.toLocaleString()}원</div>
                                 <div class="net-fee">정산 실수령액: ${netFare.toLocaleString()}원 (수수료 15% 차감)</div>
                             </div>
