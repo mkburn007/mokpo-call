@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel
-from typing import Dict
+from typing import Dict, Optional
 from datetime import datetime
 
 app = FastAPI()
@@ -13,6 +13,11 @@ drivers_db: Dict[int, str] = {1: "김기사", 2: "이기사", 3: "박기사", 4:
 order_counter = 1
 
 class OrderCreate(BaseModel):
+    pickup: str
+    destination: str
+    fee: int
+
+class OrderUpdate(BaseModel):
     pickup: str
     destination: str
     fee: int
@@ -85,17 +90,33 @@ async def create_order(order: OrderCreate):
     order_counter += 1
     return {"status": "ok"}
 
+@app.put("/api/orders/{order_id}")
+async def update_order(order_id: int, order: OrderUpdate):
+    if order_id in orders_db:
+        orders_db[order_id]["pickup"] = order.pickup
+        orders_db[order_id]["destination"] = order.destination
+        orders_db[order_id]["fee"] = order.fee
+        return {"status": "ok"}
+    raise HTTPException(status_code=404, detail="오더를 찾을 수 없습니다.")
+
+@app.post("/api/orders/{order_id}/cancel")
+async def cancel_order(order_id: int):
+    if order_id in orders_db:
+        orders_db[order_id]["status"] = "취소됨"
+        return {"status": "ok"}
+    raise HTTPException(status_code=404, detail="오더를 찾을 수 없습니다.")
+
 @app.post("/api/orders/{order_id}/accept")
 async def accept_order(order_id: int, driver_id: int):
     if order_id in orders_db and orders_db[order_id]["status"] == "접수대기":
         orders_db[order_id]["status"] = "배차완료"
         orders_db[order_id]["driver_id"] = driver_id
         return {"status": "ok"}
-    raise HTTPException(status_code=400, detail="이미 배차되었거나 없는 오더입니다.")
+    raise HTTPException(status_code=400, detail="이미 배차되었거나 취소/완료된 오더입니다.")
 
 @app.post("/api/orders/{order_id}/complete")
 async def complete_order(order_id: int, driver_id: int):
-    if order_id in orders_db and orders_db[order_id]["driver_id"] == driver_id:
+    if order_id in orders_db and orders_db[order_id]["driver_id"] == driver_id and orders_db[order_id]["status"] == "배차완료":
         orders_db[order_id]["status"] = "배달완료"
         return {"status": "ok"}
     raise HTTPException(status_code=400, detail="처리 실패")
@@ -125,7 +146,11 @@ async def get_admin_page():
             .status-waiting { color: #007bff; font-weight: bold; }
             .status-ing { color: #ff9800; font-weight: bold; }
             .status-done { color: #28a745; font-weight: bold; }
+            .status-canceled { color: #dc3545; font-weight: bold; text-decoration: line-through; }
             .date-picker { font-size: 16px; padding: 8px; margin-bottom: 5px; width: 100%; box-sizing: border-box; }
+            .btn-sm { padding: 5px 10px; font-size: 12px; font-weight: bold; border-radius: 4px; border: none; cursor: pointer; margin: 2px; }
+            .btn-edit { background: #ffc107; color: #333; }
+            .btn-cancel { background: #dc3545; color: white; }
         </style>
     </head>
     <body>
@@ -165,10 +190,10 @@ async def get_admin_page():
         </div>
 
         <div class="card">
-            <h2>📜 해당 날짜 오더 및 기사 수행 현황</h2>
+            <h2>📜 해당 날짜 오더 및 관제 관리</h2>
             <table>
                 <thead>
-                    <tr><th>번호</th><th>출발지</th><th>도착지</th><th>총 요금</th><th>수수료(15%)</th><th>실수령액</th><th>상태</th><th>수행 기사</th></tr>
+                    <tr><th>번호</th><th>출발지</th><th>도착지</th><th>총 요금</th><th>수수료(15%)</th><th>실수령액</th><th>상태</th><th>수행 기사</th><th>관리</th></tr>
                 </thead>
                 <tbody id="order-list"></tbody>
             </table>
@@ -218,6 +243,42 @@ async def get_admin_page():
                 }
             }
 
+            async function editOrder(id, curPickup, curDest, curFee) {
+                const newPickup = prompt("수정할 출발지:", curPickup);
+                if (newPickup === null) return;
+                const newDest = prompt("수정할 도착지:", curDest);
+                if (newDest === null) return;
+                const newFeeStr = prompt("수정할 요금(원):", curFee);
+                if (newFeeStr === null) return;
+
+                const newFee = parseInt(newFeeStr);
+
+                const res = await fetch(`/api/orders/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pickup: newPickup, destination: newDest, fee: newFee })
+                });
+
+                if(res.ok) {
+                    alert("오더가 수정되었습니다. 기사 앱에도 변경 내용이 반영됩니다.");
+                    fetchOrders();
+                } else {
+                    alert("수정 실패");
+                }
+            }
+
+            async function cancelOrder(id) {
+                if(confirm(`노선 번호 #${id} 오더를 정말 취소하시겠습니까? 기사님 앱에서도 취소 처리됩니다.`)) {
+                    const res = await fetch(`/api/orders/${id}/cancel`, { method: 'POST' });
+                    if(res.ok) {
+                        alert("오더가 취소되었습니다.");
+                        fetchOrders();
+                    } else {
+                        alert("취소 실패");
+                    }
+                }
+            }
+
             function renderSettlement(elementId, settlement) {
                 const tbody = document.getElementById(elementId);
                 tbody.innerHTML = '';
@@ -253,6 +314,19 @@ async def get_admin_page():
                         statusClass = "status-done";
                         const dName = driversDict[o.driver_id] || "";
                         driverInfo = `<b>${o.driver_id}번 ${dName} (완료)</b>`;
+                    } else if (o.status === "취소됨") {
+                        statusClass = "status-canceled";
+                        driverInfo = `<span style="color:#888;">(취소됨)</span>`;
+                    }
+
+                    let actionBtns = '';
+                    if (o.status !== '배달완료' && o.status !== '취소됨') {
+                        actionBtns = `
+                            <button class="btn-sm btn-edit" onclick="editOrder(${o.id}, '${o.pickup}', '${o.destination}', ${o.fee})">수정</button>
+                            <button class="btn-sm btn-cancel" onclick="cancelOrder(${o.id})">취소</button>
+                        `;
+                    } else {
+                        actionBtns = `-`;
                     }
 
                     tbody.innerHTML += `
@@ -265,6 +339,7 @@ async def get_admin_page():
                             <td class="highlight">${net.toLocaleString()}원</td>
                             <td class="${statusClass}">${o.status}</td>
                             <td>${driverInfo}</td>
+                            <td>${actionBtns}</td>
                         </tr>
                     `;
                 });
@@ -301,6 +376,7 @@ async def get_driver_page():
             .order-card { background: white; border-radius: 10px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); border-left: 5px solid #007bff; }
             .order-card.accepted { border-left-color: #28a745; background-color: #f1f9f3; }
             .order-card.completed { border-left-color: #6c757d; background-color: #e9ecef; }
+            .order-card.canceled { border-left-color: #dc3545; background-color: #f8d7da; }
             .location { font-size: 18px; font-weight: bold; color: #212529; margin: 5px 0; }
             .fee { font-size: 18px; font-weight: bold; color: #d9534f; text-align: right; margin-top: 10px; }
             .net-fee { font-size: 16px; color: #28a745; text-align: right; font-weight: bold; }
@@ -308,6 +384,7 @@ async def get_driver_page():
             .btn-accept { background: #28a745; color: white; }
             .btn-complete { background: #17a2b8; color: white; }
             .btn-disabled { background: #ccc; color: #666; }
+            .btn-canceled { background: #dc3545; color: white; }
             .tab-btn { padding: 10px; width: 48%; margin-bottom: 10px; font-weight:bold; border-radius: 5px; border: 1px solid #007bff; background: white; color: #007bff; }
             .tab-btn.active { background: #007bff; color: white; }
         </style>
@@ -355,7 +432,6 @@ async def get_driver_page():
             let currentTab = 'waiting';
             let currentDriverId = 1;
 
-            // 계정 잠금 관련 로직 (localStorage 활용)
             function initAccount() {
                 const savedDriverId = localStorage.getItem('mokpo_driver_id');
                 if (savedDriverId) {
@@ -425,11 +501,22 @@ async def get_driver_page():
                     waitingOrders.forEach(o => {
                         const isMine = o.driver_id === myId;
                         const isWaiting = o.status === '접수대기';
+                        const isCanceled = o.status === '취소됨';
 
                         let buttonHtml = '';
-                        if (isWaiting) {
+                        let cardClass = '';
+
+                        if (isCanceled) {
+                            if (isMine || isWaiting) {
+                                cardClass = 'canceled';
+                                buttonHtml = `<button class="btn btn-canceled" disabled>🚫 관리자에 의해 취소된 오더입니다</button>`;
+                            } else {
+                                return; // 다른 사람 오더였고 취소된 건 숨김
+                            }
+                        } else if (isWaiting) {
                             buttonHtml = `<button class="btn btn-accept" onclick="acceptOrder(${o.id})">오더 수락하기</button>`;
                         } else if (isMine) {
+                            cardClass = 'accepted';
                             buttonHtml = `<button class="btn btn-complete" onclick="completeOrder(${o.id})">배달 완료 처리</button>`;
                         } else {
                             buttonHtml = `<button class="btn btn-disabled" disabled>${o.driver_id}번 기사 수행 중</button>`;
@@ -439,8 +526,8 @@ async def get_driver_page():
                         const netFare = o.fee - fee15;
 
                         container.innerHTML += `
-                            <div class="order-card ${isMine ? 'accepted' : ''}">
-                                <div style="font-size:12px; color:#6c757d;">오더 번호: #${o.id}</div>
+                            <div class="order-card ${cardClass}">
+                                <div style="font-size:12px; color:#6c757d;">오더 번호: #${o.id} ${isCanceled ? '<b style="color:red;">[취소됨]</b>' : ''}</div>
                                 <div class="location">🛫 출발: ${o.pickup}</div>
                                 <div class="location">🛬 도착: ${o.destination}</div>
                                 <div class="fee">운임: ${o.fee.toLocaleString()}원</div>
@@ -474,13 +561,20 @@ async def get_driver_page():
 
             async function acceptOrder(orderId) {
                 const driverId = currentDriverId;
-                await fetch(`/api/orders/${orderId}/accept?driver_id=${driverId}`, { method: 'POST' });
+                const res = await fetch(`/api/orders/${orderId}/accept?driver_id=${driverId}`, { method: 'POST' });
+                if(!res.ok) {
+                    const err = await res.json();
+                    alert(err.detail || "수락할 수 없는 오더입니다.");
+                }
                 fetchOrders();
             }
 
             async function completeOrder(orderId) {
                 const driverId = currentDriverId;
-                await fetch(`/api/orders/${orderId}/complete?driver_id=${driverId}`, { method: 'POST' });
+                const res = await fetch(`/api/orders/${orderId}/complete?driver_id=${driverId}`, { method: 'POST' });
+                if(!res.ok) {
+                    alert("취소되었거나 처리할 수 없는 오더입니다.");
+                }
                 fetchOrders();
             }
 
