@@ -5,8 +5,11 @@ from typing import Dict
 
 app = FastAPI()
 
-# 오더 저장 데이터 구조
+FEE_RATE = 0.15  # 수수료율 15%
+
+# 데이터 저장 구조 (오더 및 기사 1~5번 데이터)
 orders_db: Dict[int, dict] = {}
+drivers_db: Dict[int, str] = {1: "김기사", 2: "이기사", 3: "박기사", 4: "최기사", 5: "정기사"}
 order_counter = 1
 
 class OrderCreate(BaseModel):
@@ -21,7 +24,28 @@ async def root():
 # --- API 엔드포인트 ---
 @app.get("/api/orders")
 async def get_orders():
-    return {"orders": orders_db}
+    # 기사별 정산 집계 계산
+    settlement = {}
+    for d_id, d_name in drivers_db.items():
+        settlement[d_id] = {
+            "name": d_name,
+            "completed_count": 0,
+            "total_fare": 0,
+            "total_fee": 0,
+            "net_pay": 0
+        }
+    
+    for o in orders_db.values():
+        if o["status"] == "배달완료" and o["driver_id"] in settlement:
+            d_id = o["driver_id"]
+            fare = o["fee"]
+            fee = int(fare * FEE_RATE)
+            settlement[d_id]["completed_count"] += 1
+            settlement[d_id]["total_fare"] += fare
+            settlement[d_id]["total_fee"] += fee
+            settlement[d_id]["net_pay"] += (fare - fee)
+
+    return {"orders": orders_db, "settlement": settlement}
 
 @app.post("/api/orders")
 async def create_order(order: OrderCreate):
@@ -62,7 +86,7 @@ async def get_admin_page():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>목포 퀵 관제 센터</title>
+        <title>목포 퀵 관제 Center</title>
         <style>
             body { font-family: sans-serif; margin: 0; padding: 20px; background-color: #f4f6f9; }
             h1 { text-align: center; color: #333; }
@@ -72,18 +96,37 @@ async def get_admin_page():
             input { width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 5px; }
             button { width: 100%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 5px; font-size: 16px; font-weight: bold; cursor: pointer; }
             table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            th, td { border-bottom: 1px solid #eee; padding: 10px; text-align: center; }
-            th { background-color: #f8f9fa; }
+            th, td { border: 1px solid #ddd; padding: 10px; text-align: center; }
+            th { background-color: #333; color: white; }
+            .highlight { color: #28a745; font-weight: bold; }
         </style>
     </head>
     <body>
         <h1>📦 목포 퀵 관제 센터</h1>
+        
         <div class="card">
             <h2>신규 오더 접수</h2>
             <div class="form-group"><label>출발지</label><input type="text" id="pickup" placeholder="예: 평화광장"></div>
             <div class="form-group"><label>도착지</label><input type="text" id="destination" placeholder="예: 목포역"></div>
             <div class="form-group"><label>요금 (원)</label><input type="number" id="fee" placeholder="예: 8000"></div>
             <button onclick="createOrder()">오더 등록하기</button>
+        </div>
+
+        <div class="card">
+            <h2>📊 기사별 일일 정산 현황</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>기사명</th>
+                        <th>완료 건수</th>
+                        <th>총 운임</th>
+                        <th>수수료 (10%)</th>
+                        <th>기사 실 수령액</th>
+                    </tr>
+                </thead>
+                <tbody id="settlement-list"></tbody>
+            </table>
         </div>
 
         <div class="card">
@@ -102,6 +145,7 @@ async def get_admin_page():
                     const res = await fetch('/api/orders');
                     const data = await res.json();
                     renderOrders(data.orders);
+                    renderSettlement(data.settlement);
                 } catch(e) {}
             }
 
@@ -129,6 +173,23 @@ async def get_admin_page():
                 } else {
                     alert('오더 등록 실패');
                 }
+            }
+
+            function renderSettlement(settlement) {
+                const tbody = document.getElementById('settlement-list');
+                tbody.innerHTML = '';
+                Object.entries(settlement).forEach(([id, s]) => {
+                    tbody.innerHTML += `
+                        <tr>
+                            <td>${id}번</td>
+                            <td><b>${s.name}</b></td>
+                            <td>${s.completed_count}건</td>
+                            <td>${s.total_fare.toLocaleString()}원</td>
+                            <td>${s.total_fee.toLocaleString()}원</td>
+                            <td class="highlight">${s.net_pay.toLocaleString()}원</td>
+                        </tr>
+                    `;
+                });
             }
 
             function renderOrders(orders) {
@@ -183,11 +244,11 @@ async def get_driver_page():
         <div class="header">
             <h2 style="margin:0;">🛵 목포 퀵 기사 앱</h2>
             <select id="driverId" class="driver-select" onchange="fetchOrders()">
-                <option value="1">1번 기사님</option>
-                <option value="2">2번 기사님</option>
-                <option value="3">3번 기사님</option>
-                <option value="4">4번 기사님</option>
-                <option value="5">5번 기사님</option>
+                <option value="1">1번 김기사님</option>
+                <option value="2">2번 이기사님</option>
+                <option value="3">3번 박기사님</option>
+                <option value="4">4번 최기사님</option>
+                <option value="5">5번 정기사님</option>
             </select>
         </div>
 
