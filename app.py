@@ -231,7 +231,6 @@ async def get_admin_page():
         </div>
 
         <script>
-            // YYYY-MM-DD 로컬 날짜 문자열 세팅
             const todayStr = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().substring(0, 10);
             document.getElementById('searchDate').value = todayStr;
 
@@ -273,7 +272,6 @@ async def get_admin_page():
                     document.getElementById('daily-title').innerText = `${data.target_date} 일일`;
                     document.getElementById('monthly-title').innerText = `${data.target_month} 월간`;
 
-                    // 상태 변경 감지하여 알림음 발생
                     checkStatusChanges(data.orders);
 
                     renderSettlement('daily-list', data.daily_settlement);
@@ -291,9 +289,9 @@ async def get_admin_page():
                     const prev = previousOrders[o.id];
                     if (prev) {
                         if (prev.status === '접수대기' && o.status === '배차완료') {
-                            playBeep(900, 0.3); // 배차 수락음
+                            playBeep(900, 0.3);
                         } else if (prev.status === '배차완료' && o.status === '배달완료') {
-                            playBeep(1200, 0.4); // 완료 소리
+                            playBeep(1200, 0.4);
                         }
                     }
                 });
@@ -490,9 +488,26 @@ async def get_driver_page():
             .tab-btn { padding: 10px; width: 48%; margin-bottom: 10px; font-weight:bold; border-radius: 5px; border: 1px solid #007bff; background: white; color: #007bff; }
             .tab-btn.active { background: #007bff; color: white; }
             .noti-btn { background: #ff9800; color: white; border: none; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; width: 100%; margin-bottom: 15px; font-size: 16px; }
+
+            /* 신규 오더 알림 팝업 모달 스타일 */
+            .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 9999; justify-content: center; align-items: center; }
+            .modal-box { background: white; width: 90%; max-width: 400px; padding: 20px; border-radius: 12px; text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.3); animation: pop 0.3s ease-out; }
+            @keyframes pop { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+            .modal-title { font-size: 20px; font-weight: bold; color: #dc3545; margin-bottom: 10px; }
+            .modal-body { font-size: 16px; color: #333; margin-bottom: 15px; text-align: left; background: #f8f9fa; padding: 10px; border-radius: 8px; line-height: 1.5; }
+            .modal-btn { background: #007bff; color: white; padding: 12px; border: none; border-radius: 6px; font-size: 16px; font-weight: bold; width: 100%; cursor: pointer; }
         </style>
     </head>
     <body>
+        <!-- 팝업 모달 창 -->
+        <div id="orderModal" class="modal-overlay">
+            <div class="modal-box">
+                <div class="modal-title">🚨 신규 오더가 들어왔습니다!</div>
+                <div class="modal-body" id="modalContent"></div>
+                <button class="modal-btn" onclick="closeModal()">확인 및 화면 보기</button>
+            </div>
+        </div>
+
         <div class="header">
             <h2 style="margin:0;">🛵 목포 퀵 기사 앱</h2>
             <div id="account-area">
@@ -528,7 +543,6 @@ async def get_driver_page():
         <div id="order-container"></div>
 
         <script>
-            // YYYY-MM-DD 로컬 날짜 문자열 세팅
             const todayStr = new Date(Date.now() - (new Date().getTimezoneOffset() * 60000)).toISOString().substring(0, 10);
             document.getElementById('searchDate').value = todayStr;
 
@@ -541,7 +555,7 @@ async def get_driver_page():
 
             function requestNotificationPermission() {
                 audioAllowed = true;
-                playBeep(800, 0.1);
+                playAlertSound();
                 
                 if ("Notification" in window) {
                     Notification.requestPermission().then(permission => {
@@ -557,27 +571,53 @@ async def get_driver_page():
                 }
             }
 
-            function playBeep(freq = 880, duration = 0.3) {
+            // 연속 경보음 (3회 삐-삐-삐)
+            function playAlertSound() {
                 if (!audioAllowed) return;
                 try {
                     const ctx = new (window.AudioContext || window.webkitAudioContext)();
-                    const osc = ctx.createOscillator();
-                    const gain = ctx.createGain();
-                    osc.type = 'sine';
-                    osc.frequency.value = freq;
-                    osc.connect(gain);
-                    gain.connect(ctx.destination);
-                    osc.start();
-                    gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + duration);
-                    osc.stop(ctx.currentTime + duration);
+                    let times = [0, 0.15, 0.3];
+                    times.forEach(t => {
+                        const osc = ctx.createOscillator();
+                        const gain = ctx.createGain();
+                        osc.type = 'sine';
+                        osc.frequency.value = 880;
+                        osc.connect(gain);
+                        gain.connect(ctx.destination);
+                        osc.start(ctx.currentTime + t);
+                        gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + t + 0.1);
+                        osc.stop(ctx.currentTime + t + 0.1);
+                    });
                 } catch(e) {}
             }
 
-            function triggerNotification(title, body) {
-                playBeep(880, 0.4);
+            function triggerNotification(title, body, orderObj) {
+                // 1. 소리 알림
+                playAlertSound();
+
+                // 2. 팝업 모달창 띄우기
+                showModal(orderObj);
+
+                // 3. 시스템 백그라운드 푸시 알림
                 if ("Notification" in window && Notification.permission === "granted") {
                     new Notification(title, { body: body, icon: "https://cdn-icons-png.flaticon.com/512/2972/2972531.png" });
                 }
+            }
+
+            function showModal(o) {
+                const modal = document.getElementById('orderModal');
+                const content = document.getElementById('modalContent');
+                content.innerHTML = `
+                    <b>📌 출발지:</b> ${o.pickup}<br>
+                    <b>🏁 도착지:</b> ${o.destination}<br>
+                    <b>📦 물품:</b> ${o.content || '내용없음'}<br>
+                    <b>💵 요금:</b> <span style="color:#d9534f; font-weight:bold;">${o.fee.toLocaleString()}원</span>
+                `;
+                modal.style.display = 'flex';
+            }
+
+            function closeModal() {
+                document.getElementById('orderModal').style.display = 'none';
             }
 
             function populateDriverSelect() {
@@ -667,9 +707,7 @@ async def get_driver_page():
                     const res = await fetch(`/api/orders?date=${dateVal}`);
                     const data = await res.json();
                     
-                    // 신규 오더 알림 및 소리 감지
                     checkNewOrders(data.orders);
-
                     render(data.orders, data.daily_settlement);
                 } catch(e) {}
             }
@@ -688,118 +726,99 @@ async def get_driver_page():
                         knownOrderIds.add(o.id);
                         if (o.status === '접수대기') {
                             const bodyMsg = `[${o.pickup} ➔ ${o.destination}] ${o.fee.toLocaleString()}원 (${o.content || '내용없음'})`;
-                            triggerNotification("🚨 신규 퀵 오더가 접수되었습니다!", bodyMsg);
+                            triggerNotification("🚨 신규 퀵 오더가 접수되었습니다!", bodyMsg, o);
                         }
                     }
                 });
             }
 
-            function render(currentOrders, dailySettlement) {
-                const myId = currentDriverId;
-                
-                const myStat = dailySettlement[myId] || { count: 0, fare: 0, fee: 0, net: 0 };
-                document.getElementById('today-net').innerText = `${myStat.net.toLocaleString()} 원`;
-                document.getElementById('today-summary').innerText = `${myStat.count}건 완료 / 총 운임 ${myStat.fare.toLocaleString()}원 (수수료 ${myStat.fee.toLocaleString()}원)`;
-
+            function render(orders, dailySettlement) {
                 const container = document.getElementById('order-container');
                 container.innerHTML = '';
 
-                const ordersArray = Object.values(currentOrders).reverse();
+                const myStat = dailySettlement[currentDriverId] || { count: 0, fare: 0, fee: 0, net: 0 };
+                document.getElementById('today-net').innerText = `${myStat.net.toLocaleString()} 원`;
+                document.getElementById('today-summary').innerText = `${myStat.count}건 완료 / 총 운임 ${myStat.fare.toLocaleString()}원 (수수료 ${myStat.fee.toLocaleString()}원)`;
 
-                if (currentTab === 'waiting') {
-                    const waitingOrders = ordersArray.filter(o => o.status !== '배달완료');
-                    if (waitingOrders.length === 0) {
-                        container.innerHTML = '<p style="text-align: center; color: #6c757d;">대기 중인 오더가 없습니다.</p>';
-                        return;
+                const orderList = Object.values(orders).reverse();
+
+                let filtered = orderList.filter(o => {
+                    if (currentTab === 'waiting') {
+                        return o.status === '접수대기' || (o.status === '배차완료' && o.driver_id === currentDriverId);
+                    } else {
+                        return (o.status === '배달완료' || o.status === '취소됨') && o.driver_id === currentDriverId;
+                    }
+                });
+
+                if (filtered.length === 0) {
+                    container.innerHTML = '<div style="text-align:center; padding:30px; color:#888;">표시할 오더가 없습니다.</div>';
+                    return;
+                }
+
+                filtered.forEach(o => {
+                    const fee15 = Math.floor(o.fee * 0.15);
+                    const net = o.fee - fee15;
+                    const contentText = o.content ? o.content : "내용 없음";
+
+                    let cardClass = "order-card";
+                    let actionButton = "";
+
+                    if (o.status === '접수대기') {
+                        actionButton = `<button class="btn btn-accept" onclick="acceptOrder(${o.id})">배차 수락하기</button>`;
+                    } else if (o.status === '배차완료' && o.driver_id === currentDriverId) {
+                        cardClass += " accepted";
+                        actionButton = `<button class="btn btn-complete" onclick="completeOrder(${o.id})">배달 완료 처리</button>`;
+                    } else if (o.status === '배달완료') {
+                        cardClass += " completed";
+                        actionButton = `<button class="btn btn-disabled" disabled>배달 완료됨</button>`;
+                    } else if (o.status === '취소됨') {
+                        cardClass += " canceled";
+                        actionButton = `<button class="btn btn-canceled" disabled>취소된 오더</button>`;
                     }
 
-                    waitingOrders.forEach(o => {
-                        const isMine = o.driver_id === myId;
-                        const isWaiting = o.status === '접수대기';
-                        const isCanceled = o.status === '취소됨';
-
-                        let buttonHtml = '';
-                        let cardClass = '';
-
-                        if (isCanceled) {
-                            if (isMine || isWaiting) {
-                                cardClass = 'canceled';
-                                buttonHtml = `<button class="btn btn-canceled" disabled>🚫 관리자에 의해 취소된 오더입니다</button>`;
-                            } else {
-                                return;
-                            }
-                        } else if (isWaiting) {
-                            buttonHtml = `<button class="btn btn-accept" onclick="acceptOrder(${o.id})">오더 수락하기</button>`;
-                        } else if (isMine) {
-                            cardClass = 'accepted';
-                            buttonHtml = `<button class="btn btn-complete" onclick="completeOrder(${o.id})">배달 완료 처리</button>`;
-                        } else {
-                            buttonHtml = `<button class="btn btn-disabled" disabled>${o.driver_id}번 기사 수행 중</button>`;
-                        }
-
-                        const fee15 = Math.floor(o.fee * 0.15);
-                        const netFare = o.fee - fee15;
-                        const contentHtml = o.content ? `<div class="content-box">📦 내용: ${o.content}</div>` : '';
-
-                        container.innerHTML += `
-                            <div class="order-card ${cardClass}">
-                                <div style="font-size:12px; color:#6c757d;">오더 번호: #${o.id} ${isCanceled ? '<b style="color:red;">[취소됨]</b>' : ''}</div>
-                                <div class="location">🛫 출발: ${o.pickup}</div>
-                                <div class="location">🛬 도착: ${o.destination}</div>
-                                ${contentHtml}
-                                <div class="fee">운임: ${o.fee.toLocaleString()}원</div>
-                                <div class="net-fee">실수령액 (85%): ${netFare.toLocaleString()}원</div>
-                                ${buttonHtml}
+                    container.innerHTML += `
+                        <div class="${cardClass}">
+                            <div style="display:flex; justify-shadow:space-between; justify-content:space-between; align-items:center;">
+                                <span style="font-size:12px; color:#666;">오더 #${o.id}</span>
+                                <span style="font-size:12px; font-weight:bold; color:#007bff;">${o.status}</span>
                             </div>
-                        `;
-                    });
+                            <div class="location">🛫 출발: ${o.pickup}</div>
+                            <div class="location">🛬 도착: ${o.destination}</div>
+                            <div class="content-box">📦 물품: ${contentText}</div>
+                            <div class="fee">총 운임: ${o.fee.toLocaleString()}원</div>
+                            <div class="net-fee">기사 실수령: ${net.toLocaleString()}원 (수수료 15% 차감)</div>
+                            ${actionButton}
+                        </div>
+                    `;
+                });
+            }
+
+            async function acceptOrder(id) {
+                const res = await fetch(`/api/orders/${id}/accept?driver_id=${currentDriverId}`, { method: 'POST' });
+                if (res.ok) {
+                    alert("배차가 완료되었습니다!");
+                    fetchOrders();
                 } else {
-                    const myDoneOrders = ordersArray.filter(o => o.status === '배달완료' && o.driver_id === myId);
-                    if (myDoneOrders.length === 0) {
-                        container.innerHTML = '<p style="text-align: center; color: #6c757d;">선택한 날짜에 완료한 배달 내역이 없습니다.</p>';
-                        return;
-                    }
-
-                    myDoneOrders.forEach(o => {
-                        const fee15 = Math.floor(o.fee * 0.15);
-                        const netFare = o.fee - fee15;
-                        const contentHtml = o.content ? `<div class="content-box">📦 내용: ${o.content}</div>` : '';
-
-                        container.innerHTML += `
-                            <div class="order-card completed">
-                                <div style="font-size:12px; color:#6c757d;">오더 번호: #${o.id} (완료)</div>
-                                <div class="location">🛫 출발: ${o.pickup}</div>
-                                <div class="location">🛬 도착: ${o.destination}</div>
-                                ${contentHtml}
-                                <div class="fee">총 운임: ${o.fee.toLocaleString()}원</div>
-                                <div class="net-fee">정산 실수령액: ${netFare.toLocaleString()}원 (수수료 15% 차감)</div>
-                            </div>
-                        `;
-                    });
-                }
-            }
-
-            async function acceptOrder(orderId) {
-                const driverId = currentDriverId;
-                const res = await fetch(`/api/orders/${orderId}/accept?driver_id=${driverId}`, { method: 'POST' });
-                if(!res.ok) {
                     const err = await res.json();
-                    alert(err.detail || "수락할 수 없는 오더입니다.");
+                    alert(err.detail || "배차 실패");
                 }
-                fetchOrders();
             }
 
-            async function completeOrder(orderId) {
-                const driverId = currentDriverId;
-                const res = await fetch(`/api/orders/${orderId}/complete?driver_id=${driverId}`, { method: 'POST' });
-                if(!res.ok) {
-                    alert("취소되었거나 처리할 수 없는 오더입니다.");
+            async function completeOrder(id) {
+                if (confirm("배달을 완료하시겠습니까?")) {
+                    const res = await fetch(`/api/orders/${id}/complete?driver_id=${currentDriverId}`, { method: 'POST' });
+                    if (res.ok) {
+                        alert("배달 완료 처리되었습니다.");
+                        fetchOrders();
+                    } else {
+                        const err = await res.json();
+                        alert(err.detail || "완료 처리 실패");
+                    }
                 }
-                fetchOrders();
             }
 
-            initAccount();
             setInterval(fetchOrders, 2000);
+            initAccount();
             fetchOrders();
         </script>
     </body>
