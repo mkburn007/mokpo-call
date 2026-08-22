@@ -9,7 +9,10 @@ app = FastAPI()
 FEE_RATE = 0.15  # 수수료율 15%
 
 orders_db: Dict[int, dict] = {}
-drivers_db: Dict[int, str] = {1: "김기사", 2: "이기사", 3: "박기사", 4: "최기사", 5: "정기사"}
+
+# 기사님 1번부터 100번까지 기본이름 생성 (이후 기사 앱에서 스스로 변경 가능)
+drivers_db: Dict[int, str] = {i: f"{i}번 기사" for i in range(1, 101)}
+
 order_counter = 1
 
 class OrderCreate(BaseModel):
@@ -21,6 +24,10 @@ class OrderUpdate(BaseModel):
     pickup: str
     destination: str
     fee: int
+
+class DriverNameUpdate(BaseModel):
+    driver_id: int
+    name: str
 
 @app.get("/")
 async def root():
@@ -72,6 +79,13 @@ async def get_orders(date: str = None):
         "target_date": target_date,
         "target_month": target_month
     }
+
+@app.post("/api/drivers/name")
+async def update_driver_name(data: DriverNameUpdate):
+    if data.driver_id in drivers_db:
+        drivers_db[data.driver_id] = data.name.strip() if data.name.strip() else f"{data.driver_id}번 기사"
+        return {"status": "ok", "name": drivers_db[data.driver_id]}
+    raise HTTPException(status_code=404, detail="기사를 찾을 수 없습니다.")
 
 @app.post("/api/orders")
 async def create_order(order: OrderCreate):
@@ -151,6 +165,7 @@ async def get_admin_page():
             .btn-sm { padding: 5px 10px; font-size: 12px; font-weight: bold; border-radius: 4px; border: none; cursor: pointer; margin: 2px; }
             .btn-edit { background: #ffc107; color: #333; }
             .btn-cancel { background: #dc3545; color: white; }
+            .table-scroll { max-height: 400px; overflow-y: auto; }
         </style>
     </head>
     <body>
@@ -171,22 +186,26 @@ async def get_admin_page():
 
         <div class="card">
             <h2>📊 <span id="daily-title">일일</span> 정산 현황 (수수료 15%)</h2>
-            <table>
-                <thead>
-                    <tr><th>ID</th><th>기사명</th><th>완료 건수</th><th>총 운임</th><th>수수료 (15%)</th><th>기사 실 수령액</th></tr>
-                </thead>
-                <tbody id="daily-list"></tbody>
-            </table>
+            <div class="table-scroll">
+                <table>
+                    <thead>
+                        <tr><th>ID</th><th>기사명</th><th>완료 건수</th><th>총 운임</th><th>수수료 (15%)</th><th>기사 실 수령액</th></tr>
+                    </thead>
+                    <tbody id="daily-list"></tbody>
+                </table>
+            </div>
         </div>
 
         <div class="card">
             <h2>🗓️ <span id="monthly-title">월간</span> 정산 현황 (수수료 15%)</h2>
-            <table>
-                <thead>
-                    <tr><th>ID</th><th>기사명</th><th>완료 건수</th><th>총 운임</th><th>수수료 (15%)</th><th>기사 실 수령액</th></tr>
-                </thead>
-                <tbody id="monthly-list"></tbody>
-            </table>
+            <div class="table-scroll">
+                <table>
+                    <thead>
+                        <tr><th>ID</th><th>기사명</th><th>완료 건수</th><th>총 운임</th><th>수수료 (15%)</th><th>기사 실 수령액</th></tr>
+                    </thead>
+                    <tbody id="monthly-list"></tbody>
+                </table>
+            </div>
         </div>
 
         <div class="card">
@@ -283,17 +302,23 @@ async def get_admin_page():
                 const tbody = document.getElementById(elementId);
                 tbody.innerHTML = '';
                 Object.entries(settlement).forEach(([id, s]) => {
-                    tbody.innerHTML += `
-                        <tr>
-                            <td>${id}번</td>
-                            <td><b>${s.name}</b></td>
-                            <td>${s.count}건</td>
-                            <td>${s.fare.toLocaleString()}원</td>
-                            <td>${s.fee.toLocaleString()}원</td>
-                            <td class="highlight">${s.net.toLocaleString()}원</td>
-                        </tr>
-                    `;
+                    if (s.count > 0) {
+                        tbody.innerHTML += `
+                            <tr>
+                                <td>${id}번</td>
+                                <td><b>${s.name}</b></td>
+                                <td>${s.count}건</td>
+                                <td>${s.fare.toLocaleString()}원</td>
+                                <td>${s.fee.toLocaleString()}원</td>
+                                <td class="highlight">${s.net.toLocaleString()}원</td>
+                            </tr>
+                        `;
+                    }
                 });
+
+                if (tbody.innerHTML === '') {
+                    tbody.innerHTML = '<tr><td colspan="6" style="color:#888;">완료된 정산 내역이 없습니다.</td></tr>';
+                }
             }
 
             function renderOrders(orders) {
@@ -365,8 +390,9 @@ async def get_driver_page():
         <style>
             body { font-family: sans-serif; margin: 0; padding: 15px; background-color: #f8f9fa; }
             .header { background: #343a40; color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px; text-align: center; }
-            .driver-select { font-size: 16px; padding: 8px; width: 100%; border-radius: 5px; margin-top: 8px; }
-            .lock-btn { margin-top: 8px; background: #28a745; color: white; border: none; padding: 8px 12px; border-radius: 5px; font-weight: bold; cursor: pointer; width: 100%; }
+            .driver-select { font-size: 16px; padding: 8px; width: 100%; border-radius: 5px; margin-top: 8px; box-sizing: border-box; }
+            .driver-input { font-size: 16px; padding: 8px; width: 100%; border-radius: 5px; margin-top: 8px; box-sizing: border-box; border: 1px solid #ccc; }
+            .lock-btn { margin-top: 8px; background: #28a745; color: white; border: none; padding: 10px; border-radius: 5px; font-weight: bold; cursor: pointer; width: 100%; font-size: 15px; }
             .unlock-btn { margin-top: 8px; background: #dc3545; color: white; border: none; padding: 6px 10px; border-radius: 5px; font-size: 12px; cursor: pointer; }
             .date-card { background: white; padding: 12px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
             .date-picker { font-size: 16px; padding: 8px; width: 100%; box-sizing: border-box; border-radius: 5px; border: 1px solid #ccc; }
@@ -393,14 +419,9 @@ async def get_driver_page():
         <div class="header">
             <h2 style="margin:0;">🛵 목포 퀵 기사 앱</h2>
             <div id="account-area">
-                <select id="driverId" class="driver-select">
-                    <option value="1">1번 김기사님</option>
-                    <option value="2">2번 이기사님</option>
-                    <option value="3">3번 박기사님</option>
-                    <option value="4">4번 최기사님</option>
-                    <option value="5">5번 정기사님</option>
-                </select>
-                <button class="lock-btn" onclick="lockAccount()">🔒 계정 고정 (이 기사로 계속 사용)</button>
+                <select id="driverId" class="driver-select"></select>
+                <input type="text" id="driverNameInput" class="driver-input" placeholder="기사님 이름 입력 (예: 홍길동)">
+                <button class="lock-btn" onclick="lockAccount()">🔒 계정 고정 및 이름 등록</button>
             </div>
             <div id="locked-area" style="display:none; margin-top:8px;">
                 <span id="locked-driver-name" style="font-size:18px; font-weight:bold; color:#ffc107;"></span>
@@ -431,33 +452,75 @@ async def get_driver_page():
             document.getElementById('searchDate').value = new Date().toISOString().substring(0, 10);
             let currentTab = 'waiting';
             let currentDriverId = 1;
+            let currentDriverName = "";
 
-            function initAccount() {
-                const savedDriverId = localStorage.getItem('mokpo_driver_id');
-                if (savedDriverId) {
-                    currentDriverId = parseInt(savedDriverId);
-                    document.getElementById('account-area').style.display = 'none';
-                    document.getElementById('locked-area').style.display = 'block';
-                    
-                    const names = {1:"1번 김기사님", 2:"2번 이기사님", 3:"3번 박기사님", 4:"4번 최기사님", 5:"5번 정기사님"};
-                    document.getElementById('locked-driver-name').innerText = `👤 ${names[currentDriverId]} 로그인됨`;
-                } else {
-                    document.getElementById('account-area').style.display = 'block';
-                    document.getElementById('locked-area').style.display = 'none';
-                    currentDriverId = parseInt(document.getElementById('driverId').value);
+            function populateDriverSelect() {
+                const select = document.getElementById('driverId');
+                select.innerHTML = '';
+                for (let i = 1; i <= 100; i++) {
+                    const opt = document.createElement('option');
+                    opt.value = i;
+                    opt.innerText = `${i}번 기사 번호 선택`;
+                    select.appendChild(opt);
                 }
             }
 
-            function lockAccount() {
-                const selId = document.getElementById('driverId').value;
-                localStorage.setItem('mokpo_driver_id', selId);
-                initAccount();
-                fetchOrders();
+            async function initAccount() {
+                populateDriverSelect();
+                const savedDriverId = localStorage.getItem('mokpo_driver_id');
+                const savedDriverName = localStorage.getItem('mokpo_driver_name');
+
+                if (savedDriverId) {
+                    currentDriverId = parseInt(savedDriverId);
+                    currentDriverName = savedDriverName || `${currentDriverId}번 기사`;
+
+                    document.getElementById('account-area').style.display = 'none';
+                    document.getElementById('locked-area').style.display = 'block';
+                    document.getElementById('locked-driver-name').innerText = `👤 ${currentDriverId}번 [${currentDriverName}] 로그인됨`;
+
+                    // 서버에 고정된 기사명 동기화
+                    await fetch('/api/drivers/name', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ driver_id: currentDriverId, name: currentDriverName })
+                    });
+                } else {
+                    document.getElementById('account-area').style.display = 'block';
+                    document.getElementById('locked-area').style.display = 'none';
+                    currentDriverId = parseInt(document.getElementById('driverId').value || 1);
+                }
+            }
+
+            async function lockAccount() {
+                const selId = parseInt(document.getElementById('driverId').value);
+                const nameInput = document.getElementById('driverNameInput').value.trim();
+
+                if (!nameInput) {
+                    alert("기사님 성함 또는 이름을 입력해 주세요!");
+                    return;
+                }
+
+                // 서버에 이름 등록
+                const res = await fetch('/api/drivers/name', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ driver_id: selId, name: nameInput })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    localStorage.setItem('mokpo_driver_id', selId);
+                    localStorage.setItem('mokpo_driver_name', data.name);
+                    alert(`${selId}번 [${data.name}]님으로 계정이 고정되었습니다.`);
+                    initAccount();
+                    fetchOrders();
+                }
             }
 
             function unlockAccount() {
                 if(confirm("계정을 변경하시겠습니까?")) {
                     localStorage.removeItem('mokpo_driver_id');
+                    localStorage.removeItem('mokpo_driver_name');
                     initAccount();
                     fetchOrders();
                 }
@@ -511,7 +574,7 @@ async def get_driver_page():
                                 cardClass = 'canceled';
                                 buttonHtml = `<button class="btn btn-canceled" disabled>🚫 관리자에 의해 취소된 오더입니다</button>`;
                             } else {
-                                return; // 다른 사람 오더였고 취소된 건 숨김
+                                return;
                             }
                         } else if (isWaiting) {
                             buttonHtml = `<button class="btn btn-accept" onclick="acceptOrder(${o.id})">오더 수락하기</button>`;
